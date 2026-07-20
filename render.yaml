@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: screen-review-server
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./ScreenReviewServer/Dockerfile
+    dockerContext: ./ScreenReviewServer
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: SCREEN_REVIEW_DATA_DIR
+        value: /var/data
+    disk:
+      name: screen-review-data
+      mountPath: /var/data
+      sizeGB: 1

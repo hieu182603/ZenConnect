@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZenConnect</title>
+  <link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+  <section id="entry-screen" class="entry-screen">
+    <header class="entry-header">
+      <div class="brand brand-light">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>ZenConnect</span>
+      </div>
+      <div class="secure-state">
+        <span class="secure-dot"></span>
+        Kết nối an toàn
+      </div>
+    </header>
+
+    <main class="entry-layout">
+      <div class="entry-console">
+        <p class="screen-index">01 / ENTRY</p>
+        <h1>Vào phòng review</h1>
+        <p class="entry-lead">Nhập key hiển thị trên máy cần xem để vào đúng phòng.</p>
+
+        <form id="connection-form" class="entry-form">
+          <label>
+            <span>Key phòng</span>
+            <span class="password-field">
+              <input id="access-key" type="password" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" required>
+              <button id="toggle-key" type="button" aria-label="Hiện key phòng" title="Hiện key phòng">Hiện</button>
+            </span>
+          </label>
+
+          <p id="entry-status" class="entry-status" aria-live="polite">Key được tạo tự động khi ZenConnect chạy lần đầu.</p>
+          <button id="connect-button" class="enter-button" type="submit">
+            <span>Vào phòng</span>
+            <span aria-hidden="true">&#8594;</span>
+          </button>
+        </form>
+
+        <p class="privacy-note">Thông tin truy cập chỉ được dùng để xác thực phiên hiện tại.</p>
+      </div>
+
+      <div class="room-preview" aria-label="Xem trước giao diện phòng review">
+        <div class="preview-frame">
+          <img src="assets/room-preview.png" alt="Giao diện phòng ZenConnect">
+        </div>
+        <div class="preview-caption">
+          <span>Phòng review trực tiếp</span>
+          <span>Ảnh · Tin nhắn · Trạng thái</span>
+        </div>
+      </div>
+    </main>
+
+
+  </section>
+
+  <section id="room-screen" class="room-screen" hidden>
+    <header class="room-header">
+      <div class="brand brand-light">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>ZenConnect</span>
+      </div>
+
+      <div class="room-identity">
+        <strong id="room-session">PHÒNG</strong>
+        <span class="room-connection">
+          <span id="status-dot" class="status-dot connected"></span>
+          <span id="status">Đã kết nối</span>
+        </span>
+      </div>
+
+      <button id="leave-button" class="leave-button" type="button">Rời phòng</button>
+    </header>
+
+    <main class="workspace">
+      <aside class="chat-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Tin nhắn</h2>
+            <p id="chat-context">Chưa chọn ảnh</p>
+          </div>
+          <span id="message-count" class="message-count">0</span>
+        </div>
+
+        <div id="chat-empty" class="empty-state">Chưa có tin nhắn trong phiên này.</div>
+        <div id="message-list" class="message-list" aria-live="polite"></div>
+
+        <form id="message-form" class="composer">
+          <div class="composer-label">
+            <label id="composer-title" for="message">Phản hồi ảnh</label>
+            <span id="character-count">0 / 2000</span>
+          </div>
+          <textarea id="message" maxlength="2000" rows="3" placeholder="Nhập phản hồi của bạn..." required disabled></textarea>
+          <div class="composer-footer">
+            <span id="message-status"></span>
+            <button id="send-button" type="submit" aria-label="Gửi tin nhắn" title="Gửi tin nhắn" disabled>
+              <span aria-hidden="true">&#8594;</span>
+            </button>
+          </div>
+        </form>
+      </aside>
+
+      <section class="viewer-panel">
+        <div class="viewer-toolbar">
+          <div class="image-meta">
+            <strong id="sequence">Chưa có ảnh</strong>
+            <time id="created-at"></time>
+          </div>
+          <label class="handled-control">
+            <input id="handled" type="checkbox" disabled>
+            <span>Đã xử lý</span>
+          </label>
+        </div>
+
+        <div class="image-stage">
+          <div id="review-empty" class="viewer-empty">Chưa có ảnh trong phiên này.</div>
+          <img id="selected-image" alt="Ảnh chụp màn hình đang được xem" hidden>
+          <button id="previous-button" class="nav-button previous" type="button" aria-label="Ảnh trước" title="Ảnh trước" disabled>
+            <span aria-hidden="true">&#8249;</span>
+          </button>
+          <button id="next-button" class="nav-button next" type="button" aria-label="Ảnh tiếp theo" title="Ảnh tiếp theo" disabled>
+            <span aria-hidden="true">&#8250;</span>
+          </button>
+        </div>
+
+        <div class="filmstrip-panel">
+          <div class="filmstrip-heading">
+            <span>Ảnh trong phiên</span>
+            <strong id="image-count">0 / 0</strong>
+          </div>
+          <div id="thumbnail-list" class="thumbnail-list"></div>
+        </div>
+      </section>
+    </main>
+
+
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

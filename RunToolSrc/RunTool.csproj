@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>run_tool</AssemblyName>
+    <RootNamespace>RunTool</RootNamespace>
+    <Nullable>disable</Nullable>
+    <LangVersion>10.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\payload.zip">
+      <LogicalName>RunTool.Resources.payload.zip</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+</Project>
