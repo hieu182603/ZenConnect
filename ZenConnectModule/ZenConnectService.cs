@@ -799,7 +799,7 @@ internal sealed class MessageOverlayForm : Form
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(40, 44, 52); // Dark theme background
         Opacity = 0.95;
-        Size = new Size(350, 150);
+        Size = new Size(350, 75);
 
         _titleLabel = new Label
         {
@@ -823,7 +823,7 @@ internal sealed class MessageOverlayForm : Form
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 12f, FontStyle.Bold),
             Location = new Point(15, 40),
-            Size = new Size(320, 90),
+            Size = new Size(320, 25),
             TextAlign = ContentAlignment.TopLeft,
             AutoEllipsis = true
         };
