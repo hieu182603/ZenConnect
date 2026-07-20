@@ -59,7 +59,6 @@ public sealed class ZenConnectService : Form
     private bool _busy;
     private bool _backgroundMode;
     private bool _connected;
-    private bool _hotKeyRegistered;
     private int _overlayMessageIndex = -1;
     private string _registeredServerUrl;
 
@@ -557,6 +556,133 @@ public sealed class ZenConnectService : Form
         _messageText.Text = selected == null ? string.Empty : selected.Text;
     }
 
+    private void StartInputHooks()
+    {
+        IntPtr module = GetModuleHandle(null);
+        if (_keyboardHook == IntPtr.Zero)
+        {
+            _keyboardHook = SetWindowsHookEx(WhKeyboardLl, _keyboardHookCallback, module, 0);
+            if (_keyboardHook == IntPtr.Zero)
+                throw new InvalidOperationException("Khong the theo doi phim X tren may nay.");
+        }
+
+        if (_mouseHook == IntPtr.Zero)
+        {
+            _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, module, 0);
+            if (_mouseHook == IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_keyboardHook);
+                _keyboardHook = IntPtr.Zero;
+                throw new InvalidOperationException("Khong the theo doi chuot tren may nay.");
+            }
+        }
+    }
+
+    private void StopInputHooks()
+    {
+        _connected = false;
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+
+        if (_keyboardHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_keyboardHook);
+            _keyboardHook = IntPtr.Zero;
+        }
+    }
+
+    private IntPtr HandleMouseHook(int code, IntPtr message, IntPtr data)
+    {
+        if (code >= 0 && _connected && !IsDisposed)
+        {
+            int mouseMessage = message.ToInt32();
+            if (mouseMessage == WmMiddleButtonDown)
+            {
+                QueueOnUiThread(ToggleMessageOverlay);
+            }
+            else if (mouseMessage == WmMouseWheel && _messageOverlay.Visible)
+            {
+                var input = Marshal.PtrToStructure<LowLevelMouseInput>(data);
+                int delta = unchecked((short)((input.MouseData >> 16) & 0xffff));
+                QueueOnUiThread(() => CycleOverlayMessage(delta));
+            }
+        }
+
+        return CallNextHookEx(_mouseHook, code, message, data);
+    }
+
+    private IntPtr HandleKeyboardHook(int code, IntPtr message, IntPtr data)
+    {
+        if (code >= 0
+            && _connected
+            && !IsDisposed
+            && message.ToInt32() == WmKeyDown
+            && Marshal.ReadInt32(data) == (int)Keys.X)
+        {
+            QueueOnUiThread(async () => await CaptureFullScreenAsync());
+        }
+
+        return CallNextHookEx(_keyboardHook, code, message, data);
+    }
+
+    private void QueueOnUiThread(Action action)
+    {
+        try
+        {
+            if (IsHandleCreated && !IsDisposed)
+                BeginInvoke(action);
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private void ToggleMessageOverlay()
+    {
+        if (_messageOverlay.Visible)
+        {
+            _messageOverlay.Hide();
+            return;
+        }
+
+        _overlayMessageIndex = _messages.Items.Count - 1;
+        ShowCurrentOverlayMessage();
+    }
+
+    private void CycleOverlayMessage(int wheelDelta)
+    {
+        int count = _messages.Items.Count;
+        if (!_messageOverlay.Visible || count == 0 || wheelDelta == 0)
+            return;
+
+        int direction = wheelDelta > 0 ? -1 : 1;
+        _overlayMessageIndex = (_overlayMessageIndex + direction + count) % count;
+        ShowCurrentOverlayMessage();
+    }
+
+    private void ShowCurrentOverlayMessage()
+    {
+        int count = _messages.Items.Count;
+        if (count == 0)
+        {
+            _messageOverlay.SetMessage("Tin nhan", "Chua co tin nhan.", "0 / 0");
+        }
+        else
+        {
+            _overlayMessageIndex = Math.Max(0, Math.Min(_overlayMessageIndex, count - 1));
+            var message = (MessageResponse)_messages.Items[_overlayMessageIndex];
+            _messageOverlay.SetMessage(
+                "Anh " + message.Sequence + " · " + message.CreatedAt.ToLocalTime().ToString("HH:mm:ss"),
+                message.Text,
+                (_overlayMessageIndex + 1) + " / " + count);
+        }
+
+        _messageOverlay.ShowNear(Cursor.Position);
+    }
+
     private static string FriendlyError(Exception exception)
     {
         if (exception is HttpRequestException)
@@ -623,18 +749,6 @@ public sealed class ZenConnectService : Form
             return "Anh " + Sequence + "  |  " + CreatedAt.ToLocalTime().ToString("HH:mm:ss");
         }
     }
-    private void ShowCurrentOverlayMessage()
-    {
-        if (_overlayMessageIndex >= 0 && _overlayMessageIndex < _messages.Items.Count)
-        {
-            var msg = _messages.Items[_overlayMessageIndex] as MessageResponse;
-            if (msg != null)
-            {
-                _messageOverlay.ShowMessage(msg.Text);
-            }
-        }
-    }
-
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr SetWindowsHookEx(int idHook, MouseHookCallback lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -651,69 +765,21 @@ public sealed class ZenConnectService : Form
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string lpModuleName);
 
-    private void StartInputHooks()
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LowLevelMouseInput
     {
-        if (_keyboardHook == IntPtr.Zero)
-        {
-            using (Process curProcess = Process.GetCurrentProcess())
-            using (ProcessModule curModule = curProcess.MainModule)
-            {
-                _keyboardHook = SetWindowsHookEx(WhKeyboardLl, _keyboardHookCallback, GetModuleHandle(curModule.ModuleName), 0);
-            }
-        }
-        if (_mouseHook == IntPtr.Zero)
-        {
-            using (Process curProcess = Process.GetCurrentProcess())
-            using (ProcessModule curModule = curProcess.MainModule)
-            {
-                _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, GetModuleHandle(curModule.ModuleName), 0);
-            }
-        }
+        public NativePoint Point;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
     }
 
-    private void StopInputHooks()
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
     {
-        if (_keyboardHook != IntPtr.Zero)
-        {
-            UnhookWindowsHookEx(_keyboardHook);
-            _keyboardHook = IntPtr.Zero;
-        }
-        if (_mouseHook != IntPtr.Zero)
-        {
-            UnhookWindowsHookEx(_mouseHook);
-            _mouseHook = IntPtr.Zero;
-        }
-    }
-
-    private IntPtr HandleMouseHook(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0)
-        {
-            int w = wParam.ToInt32();
-            if (w == WmMiddleButtonDown)
-            {
-                if (CanOperate())
-                {
-                    ShowCurrentOverlayMessage();
-                }
-            }
-        }
-        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
-    }
-    private IntPtr HandleKeyboardHook(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0 && wParam.ToInt32() == WmKeyDown)
-        {
-            int vkCode = Marshal.ReadInt32(lParam);
-            if (vkCode == (int)Keys.X)
-            {
-                if (CanOperate())
-                {
-                    BeginInvoke(new Action(async () => await CaptureFullScreenAsync()));
-                }
-            }
-        }
-        return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+        public int X;
+        public int Y;
     }
 }
 
@@ -722,34 +788,85 @@ public delegate IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lPa
 
 internal sealed class MessageOverlayForm : Form
 {
-    private Label _label;
+    private Label _titleLabel;
+    private Label _textLabel;
+    private Label _countLabel;
+
     public MessageOverlayForm()
     {
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = Color.Black;
-        Opacity = 0.8;
-        _label = new Label
+        BackColor = Color.FromArgb(40, 44, 52); // Dark theme background
+        Opacity = 0.95;
+        Size = new Size(350, 150);
+
+        _titleLabel = new Label
         {
-            Dock = DockStyle.Fill,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 16f, FontStyle.Bold),
-            TextAlign = ContentAlignment.MiddleCenter
+            ForeColor = Color.LightGray,
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            Location = new Point(15, 10),
+            AutoSize = true
         };
-        Controls.Add(_label);
-    }
-    public void ShowMessage(string text)
-    {
-        _label.Text = text;
-        if (!Visible)
+
+        _countLabel = new Label
         {
-            Size = new Size(800, 100);
-            Location = new Point(
-                (Screen.PrimaryScreen.Bounds.Width - Width) / 2,
-                Screen.PrimaryScreen.Bounds.Height - Height - 100);
-            Show();
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            Location = new Point(280, 10),
+            AutoSize = true,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+
+        _textLabel = new Label
+        {
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+            Location = new Point(15, 40),
+            Size = new Size(320, 90),
+            TextAlign = ContentAlignment.TopLeft,
+            AutoEllipsis = true
+        };
+
+        Controls.Add(_titleLabel);
+        Controls.Add(_countLabel);
+        Controls.Add(_textLabel);
+    }
+
+    public void SetMessage(string title, string text, string count)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(new Action(() => SetMessage(title, text, count)));
+            return;
         }
+
+        _titleLabel.Text = title;
+        _textLabel.Text = text;
+        _countLabel.Text = count;
+        _countLabel.Left = Width - _countLabel.PreferredWidth - 15;
+    }
+
+    public void ShowNear(Point location)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(new Action(() => ShowNear(location)));
+            return;
+        }
+
+        if (!Visible) Show();
+
+        // Position it near the requested location (e.g., mouse cursor)
+        int x = location.X + 20;
+        int y = location.Y + 20;
+
+        // Keep on screen
+        var screen = Screen.FromPoint(location).Bounds;
+        if (x + Width > screen.Right) x = location.X - Width - 20;
+        if (y + Height > screen.Bottom) y = location.Y - Height - 20;
+
+        Location = new Point(x, y);
     }
 }
 

@@ -191,7 +191,10 @@ async function loadImages(items) {
   await Promise.all(items.map(async (item) => {
     if (state.objectUrls.has(item.id)) return;
     const response = await fetch(item.imageUrl, { headers: authHeaders() });
-    if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) {
+      const errStr = await responseError(response);
+      throw new Error(`${item.imageUrl}: ${errStr}`);
+    }
     state.objectUrls.set(item.id, URL.createObjectURL(await response.blob()));
   }));
 }
@@ -373,7 +376,10 @@ async function api(path, options = {}) {
       ...(options.headers ?? {}),
     },
   });
-  if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) {
+      const errStr = await responseError(response);
+      throw new Error(`${path}: ${errStr}`);
+    }
   if (response.status === 204) return null;
   return response.json();
 }
