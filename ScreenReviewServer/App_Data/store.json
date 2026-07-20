@@ -5,7 +5,23 @@
       "CreatedAt": "2026-07-20T04:30:31.5006592+00:00"
     }
   ],
-  "Screenshots": [],
-  "Messages": [],
-  "NextMessageId": 1
+  "Screenshots": [
+    {
+      "Id": "90ac5c89-9dec-4624-8d24-690623421082",
+      "Session": "UF5D-8HT3-QMTA-4DER-XHJJ",
+      "Sequence": 1,
+      "FileName": "d446219abf86459ea2bcc4d5b9b3947f.png",
+      "CreatedAt": "2026-07-20T05:34:28.2697302+00:00",
+      "Handled": true
+    }
+  ],
+  "Messages": [
+    {
+      "Id": 1,
+      "ScreenshotId": "90ac5c89-9dec-4624-8d24-690623421082",
+      "Text": "hello",
+      "CreatedAt": "2026-07-20T05:34:51.2813835+00:00"
+    }
+  ],
+  "NextMessageId": 2
 }

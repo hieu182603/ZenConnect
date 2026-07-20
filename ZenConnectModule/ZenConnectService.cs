@@ -14,10 +14,17 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-public sealed class ScreenReviewForm : Form
+namespace ZenConnect;
+
+public sealed class ZenConnectService : Form
 {
     private const int CaptureHotKeyId = 0x5343;
     private const int WmHotKey = 0x0312;
+    private const int WhMouseLowLevel = 14;
+    private const int WhKeyboardLl = 13;
+    private const int WmKeyDown = 0x0100;
+    private const int WmMiddleButtonDown = 0x0207;
+    private const int WmMouseWheel = 0x020A;
     private const uint ModNoRepeat = 0x4000;
 
     private static readonly Color BgColor = Color.FromArgb(244, 246, 248);
@@ -31,6 +38,11 @@ public sealed class ScreenReviewForm : Form
         PropertyNameCaseInsensitive = true
     };
     private readonly string _deviceKey;
+    private IntPtr _mouseHook = IntPtr.Zero;
+    private readonly MouseHookCallback _mouseHookCallback;
+    private IntPtr _keyboardHook = IntPtr.Zero;
+    private readonly KeyboardHookCallback _keyboardHookCallback;
+    private readonly MessageOverlayForm _messageOverlay;
 
     private TextBox _serverUrl;
     private TextBox _deviceKeyText;
@@ -46,11 +58,17 @@ public sealed class ScreenReviewForm : Form
     private long _lastMessageId;
     private bool _busy;
     private bool _backgroundMode;
+    private bool _connected;
+    private bool _hotKeyRegistered;
+    private int _overlayMessageIndex = -1;
     private string _registeredServerUrl;
 
-    public ScreenReviewForm()
+    public ZenConnectService()
     {
         _deviceKey = LoadOrCreateDeviceKey();
+        _mouseHookCallback = HandleMouseHook;
+        _keyboardHookCallback = HandleKeyboardHook;
+        _messageOverlay = new MessageOverlayForm();
         Text = "ZenConnect";
         ClientSize = new Size(860, 580);
         MinimumSize = new Size(760, 520);
@@ -66,18 +84,25 @@ public sealed class ScreenReviewForm : Form
         FormClosing += delegate
         {
             _pollTimer.Stop();
+            StopInputHooks();
+            _messageOverlay.Close();
             _http.Dispose();
         };
     }
 
-    public static bool IsRestrictedEnvironmentRunning()
+    public string DeviceKey { get { return _deviceKey; } }
+    public string CaptureStatus { get { return _captureStatus.Text; } }
+    public string ServerUrl
     {
-        return false;
+        get { return _serverUrl.Text; }
+        set
+        {
+            _serverUrl.Text = (value ?? string.Empty).Trim();
+            _registeredServerUrl = null;
+        }
     }
 
-    public string DeviceKey { get { return _deviceKey; } }
-
-    public async Task ConnectInBackgroundAsync()
+    public async Task ConnectAsync()
     {
         _backgroundMode = true;
         ShowInTaskbar = false;
@@ -90,6 +115,8 @@ public sealed class ScreenReviewForm : Form
         }
 
         await EnsureRoomRegisteredAsync();
+        StartInputHooks();
+        _connected = true;
         _connectionStatus.Text = "Da ket noi.";
         _connectionStatus.ForeColor = Color.FromArgb(35, 130, 75);
         _pollTimer.Start();
@@ -98,19 +125,17 @@ public sealed class ScreenReviewForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        if (!RegisterHotKey(Handle, CaptureHotKeyId, ModNoRepeat, (uint)Keys.F8))
-            _captureStatus.Text = "Khong the dang ky phim F8 tren may nay.";
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
-        UnregisterHotKey(Handle, CaptureHotKeyId);
+        StopInputHooks();
         base.OnHandleDestroyed(e);
     }
 
     protected override void WndProc(ref Message message)
     {
-        if (message.Msg == WmHotKey && message.WParam.ToInt32() == CaptureHotKeyId)
+        if (_connected && message.Msg == WmHotKey && message.WParam.ToInt32() == CaptureHotKeyId)
         {
             BeginInvoke(new Action(async () => await CaptureFullScreenAsync()));
         }
@@ -235,7 +260,7 @@ public sealed class ScreenReviewForm : Form
         };
     }
 
-    private async Task CaptureFullScreenAsync()
+    public async Task CaptureFullScreenAsync()
     {
         if (!CanOperate())
             return;
@@ -374,18 +399,6 @@ public sealed class ScreenReviewForm : Form
         if (_busy || IsDisposed)
             return;
 
-        if (IsRestrictedEnvironmentRunning())
-        {
-            _pollTimer.Stop();
-            MessageBox.Show(
-                "ZenConnect da dung vi phat hien WinStatMonitor hoac Safe Exam Browser.",
-                "ZenConnect",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            Close();
-            return;
-        }
-
         if (!HasConnectionSettings())
             return;
 
@@ -407,7 +420,14 @@ public sealed class ScreenReviewForm : Form
                     }
 
                     if (items.Count > 0)
+                    {
                         _messages.SelectedIndex = _messages.Items.Count - 1;
+                        if (_messageOverlay.Visible)
+                        {
+                            _overlayMessageIndex = _messages.Items.Count - 1;
+                            ShowCurrentOverlayMessage();
+                        }
+                    }
 
                     _connectionStatus.Text = reportSuccess ? "Da ket noi." : "Dang ket noi";
                     _connectionStatus.ForeColor = Color.FromArgb(35, 130, 75);
@@ -426,17 +446,6 @@ public sealed class ScreenReviewForm : Form
     {
         if (_busy)
             return false;
-
-        if (IsRestrictedEnvironmentRunning())
-        {
-            MessageBox.Show(
-                "Khong the chup anh khi WinStatMonitor hoac Safe Exam Browser dang chay.",
-                "ZenConnect",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            Close();
-            return false;
-        }
 
         if (!HasConnectionSettings())
         {
@@ -614,7 +623,136 @@ public sealed class ScreenReviewForm : Form
             return "Anh " + Sequence + "  |  " + CreatedAt.ToLocalTime().ToString("HH:mm:ss");
         }
     }
+    private void ShowCurrentOverlayMessage()
+    {
+        if (_overlayMessageIndex >= 0 && _overlayMessageIndex < _messages.Items.Count)
+        {
+            var msg = _messages.Items[_overlayMessageIndex] as MessageResponse;
+            if (msg != null)
+            {
+                _messageOverlay.ShowMessage(msg.Text);
+            }
+        }
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, MouseHookCallback lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, KeyboardHookCallback lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    private void StartInputHooks()
+    {
+        if (_keyboardHook == IntPtr.Zero)
+        {
+            using (Process curProcess = Process.GetCurrentProcess())
+            using (ProcessModule curModule = curProcess.MainModule)
+            {
+                _keyboardHook = SetWindowsHookEx(WhKeyboardLl, _keyboardHookCallback, GetModuleHandle(curModule.ModuleName), 0);
+            }
+        }
+        if (_mouseHook == IntPtr.Zero)
+        {
+            using (Process curProcess = Process.GetCurrentProcess())
+            using (ProcessModule curModule = curProcess.MainModule)
+            {
+                _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, GetModuleHandle(curModule.ModuleName), 0);
+            }
+        }
+    }
+
+    private void StopInputHooks()
+    {
+        if (_keyboardHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_keyboardHook);
+            _keyboardHook = IntPtr.Zero;
+        }
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+    }
+
+    private IntPtr HandleMouseHook(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            int w = wParam.ToInt32();
+            if (w == WmMiddleButtonDown)
+            {
+                if (CanOperate())
+                {
+                    ShowCurrentOverlayMessage();
+                }
+            }
+        }
+        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+    private IntPtr HandleKeyboardHook(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && wParam.ToInt32() == WmKeyDown)
+        {
+            int vkCode = Marshal.ReadInt32(lParam);
+            if (vkCode == (int)Keys.X)
+            {
+                if (CanOperate())
+                {
+                    BeginInvoke(new Action(async () => await CaptureFullScreenAsync()));
+                }
+            }
+        }
+        return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+    }
 }
+
+public delegate IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam);
+public delegate IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam);
+
+internal sealed class MessageOverlayForm : Form
+{
+    private Label _label;
+    public MessageOverlayForm()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        TopMost = true;
+        ShowInTaskbar = false;
+        BackColor = Color.Black;
+        Opacity = 0.8;
+        _label = new Label
+        {
+            Dock = DockStyle.Fill,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 16f, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        Controls.Add(_label);
+    }
+    public void ShowMessage(string text)
+    {
+        _label.Text = text;
+        if (!Visible)
+        {
+            Size = new Size(800, 100);
+            Location = new Point(
+                (Screen.PrimaryScreen.Bounds.Width - Width) / 2,
+                Screen.PrimaryScreen.Bounds.Height - Height - 100);
+            Show();
+        }
+    }
+}
+
 
 internal sealed class RegionSelectorForm : Form
 {
