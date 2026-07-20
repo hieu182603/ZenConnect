@@ -154,7 +154,7 @@ public sealed class ZenConnectService : Form
         Controls.Add(connectionPanel);
 
         connectionPanel.Controls.Add(MakeLabel("SERVER URL", new Point(16, 10), true));
-        _serverUrl = MakeTextBox("http://localhost:5080", new Point(16, 32), new Size(280, 27));
+        _serverUrl = MakeTextBox("https://zenconnect-noli.onrender.com", new Point(16, 32), new Size(280, 27));
         connectionPanel.Controls.Add(_serverUrl);
 
         connectionPanel.Controls.Add(MakeLabel("KEY PHONG CUA MAY", new Point(310, 10), true));

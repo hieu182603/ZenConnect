@@ -25,7 +25,9 @@ Server mặc định chạy tại `http://localhost:5080`. Trong client:
 2. Key được tạo trong lần chạy đầu và lưu tại
    `%LocalAppData%\ZenConnect\device-key.txt`.
 3. Mở `http://localhost:5080` trên trình duyệt và nhập key đó.
-4. Nhấn `CHỤP MÀN HÌNH` hoặc phím `F8` để gửi ảnh lên phòng.
+4. Nhấn `CHỤP MÀN HÌNH` hoặc phím `X` để gửi ảnh lên phòng.
+5. Nhấn chuột giữa để bật hoặc tắt ô tin nhắn cạnh con trỏ.
+6. Khi ô đang hiện, lăn lên hoặc xuống để chuyển tin nhắn.
 
 URL server gần nhất được lưu tại
 `%LocalAppData%\ZenConnect\server-url.txt`. Có thể đặt biến môi trường

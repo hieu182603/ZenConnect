@@ -164,7 +164,7 @@ public sealed class MainForm : Form
             return configured.Trim();
 
         string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ZenConnect", "server-url.txt");
-        return File.Exists(path) ? File.ReadAllText(path).Trim() : "http://localhost:5080";
+        return File.Exists(path) ? File.ReadAllText(path).Trim() : "https://zenconnect-noli.onrender.com";
     }
 
     private static Button MakeButton(string text, int x, int y, int width, int height, Color backColor, Color foreColor)
