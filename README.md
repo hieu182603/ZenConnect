@@ -19,12 +19,13 @@ dotnet run --project .\ScreenReviewServer\ScreenReviewServer.csproj
 dotnet run --project .\ZenConnectClient\ZenConnectClient.csproj
 ```
 
-Server mặc định chạy tại `http://localhost:5080`. Trong client:
+Server production mặc định là `https://zenconnect-noli.onrender.com`. Khi phát
+triển local, đặt `ZENCONNECT_SERVER_URL=http://localhost:5080`. Trong client:
 
 1. Nhấn `KẾT NỐI` để đăng ký phòng của máy.
 2. Key được tạo trong lần chạy đầu và lưu tại
    `%LocalAppData%\ZenConnect\device-key.txt`.
-3. Mở `http://localhost:5080` trên trình duyệt và nhập key đó.
+3. Mở `https://zenconnect-noli.onrender.com` trên trình duyệt và nhập key đó.
 4. Nhấn `CHỤP MÀN HÌNH` hoặc phím `X` để gửi ảnh lên phòng.
 5. Nhấn chuột giữa để bật hoặc tắt ô tin nhắn cạnh con trỏ.
 6. Khi ô đang hiện, lăn lên hoặc xuống để chuyển tin nhắn.
