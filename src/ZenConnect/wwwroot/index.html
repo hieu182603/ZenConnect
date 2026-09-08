@@ -4,32 +4,52 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZenConnect</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <section id="entry-screen" class="entry-screen">
     <header class="entry-header">
       <div class="brand brand-light">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>ZenConnect</span>
+        <span class="brand-copy">
+          <strong>ZenConnect</strong>
+          <small>Screen review workspace</small>
+        </span>
       </div>
       <div class="secure-state">
         <span class="secure-dot"></span>
-        Kết nối an toàn
+        Key chỉ tồn tại trong phiên này
       </div>
     </header>
 
     <main class="entry-layout">
+      <div class="entry-intro">
+        <p class="entry-kicker">Review trực tiếp</p>
+        <h1>Thấy đúng màn hình.<br>Phản hồi đúng lúc.</h1>
+        <p class="entry-lead">Một không gian tập trung để nhận ảnh chụp, trao đổi và đánh dấu công việc đã xử lý.</p>
+        <figure class="room-preview" aria-label="Xem trước giao diện phòng review">
+          <div class="preview-frame">
+            <img src="assets/room-preview.png" alt="Giao diện phòng ZenConnect với ảnh chụp và phản hồi">
+          </div>
+          <figcaption class="preview-caption">
+            <span>Ảnh chụp và phản hồi trong cùng một phòng</span>
+            <span>Tự động làm mới</span>
+          </figcaption>
+        </figure>
+      </div>
+
       <div class="entry-console">
-        <p class="screen-index">01 / ENTRY</p>
-        <h1>Vào phòng review</h1>
-        <p class="entry-lead">Nhập key hiển thị trên máy cần xem để vào đúng phòng.</p>
+        <div class="console-heading">
+          <span class="console-index">Truy cập bảo mật</span>
+          <h2>Vào phòng review</h2>
+          <p>Nhập room key đang hiển thị trên ứng dụng ZenConnect.</p>
+        </div>
 
         <form id="connection-form" class="entry-form">
           <label>
             <span>Key phòng</span>
             <span class="password-field">
-              <input id="access-key" type="password" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" required>
+              <input id="access-key" type="password" inputmode="text" autocomplete="off" spellcheck="false" maxlength="24" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" required>
               <button id="toggle-key" type="button" aria-label="Hiện key phòng" title="Hiện key phòng">Hiện</button>
             </span>
           </label>
@@ -41,28 +61,24 @@
           </button>
         </form>
 
-        <p class="privacy-note">Thông tin truy cập chỉ được dùng để xác thực phiên hiện tại.</p>
-      </div>
-
-      <div class="room-preview" aria-label="Xem trước giao diện phòng review">
-        <div class="preview-frame">
-          <img src="assets/room-preview.png" alt="Giao diện phòng ZenConnect">
+        <div class="entry-notes" aria-label="Hướng dẫn kết nối">
+          <span>Mở ZenConnect trên máy cần xem</span>
+          <span>Sao chép room key</span>
+          <span>Nhập key tại đây</span>
         </div>
-        <div class="preview-caption">
-          <span>Phòng review trực tiếp</span>
-          <span>Ảnh · Tin nhắn · Trạng thái</span>
-        </div>
+        <p class="privacy-note">Room key hoạt động như mật khẩu. Không chia sẻ ngoài nhóm review.</p>
       </div>
     </main>
-
-
   </section>
 
   <section id="room-screen" class="room-screen" hidden>
     <header class="room-header">
       <div class="brand brand-light">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>ZenConnect</span>
+        <span class="brand-copy">
+          <strong>ZenConnect</strong>
+          <small>Review workspace</small>
+        </span>
       </div>
 
       <div class="room-identity">
@@ -73,7 +89,10 @@
         </span>
       </div>
 
-      <button id="leave-button" class="leave-button" type="button">Rời phòng</button>
+      <div class="room-actions">
+        <button id="refresh-button" class="refresh-button" type="button">Làm mới</button>
+        <button id="leave-button" class="leave-button" type="button">Rời phòng</button>
+      </div>
     </header>
 
     <main class="workspace">
@@ -87,7 +106,7 @@
         </div>
 
         <div id="chat-empty" class="empty-state">Chưa có tin nhắn trong phiên này.</div>
-        <div id="message-list" class="message-list" aria-live="polite"></div>
+        <div id="message-list" class="message-list" aria-live="polite" aria-busy="false"></div>
 
         <form id="message-form" class="composer">
           <div class="composer-label">
@@ -96,7 +115,7 @@
           </div>
           <textarea id="message" maxlength="2000" rows="3" placeholder="Nhập phản hồi của bạn..." required disabled></textarea>
           <div class="composer-footer">
-            <span id="message-status"></span>
+            <span id="message-status" role="status" aria-live="polite"></span>
             <button id="send-button" type="submit" aria-label="Gửi tin nhắn" title="Gửi tin nhắn" disabled>
               <span aria-hidden="true">&#8594;</span>
             </button>
@@ -110,14 +129,25 @@
             <strong id="sequence">Chưa có ảnh</strong>
             <time id="created-at"></time>
           </div>
-          <label class="handled-control">
-            <input id="handled" type="checkbox" disabled>
-            <span>Đã xử lý</span>
-          </label>
+          <div class="viewer-actions">
+            <label class="handled-control">
+              <input id="handled" type="checkbox" disabled>
+              <span>Đã xử lý</span>
+            </label>
+            <button id="delete-button" class="delete-button" type="button" aria-label="Xóa ảnh đang xem" title="Xóa ảnh đang xem" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" />
+              </svg>
+              <span id="delete-label">Xóa ảnh</span>
+            </button>
+          </div>
         </div>
 
-        <div class="image-stage">
-          <div id="review-empty" class="viewer-empty">Chưa có ảnh trong phiên này.</div>
+        <div id="image-stage" class="image-stage" aria-busy="false">
+          <div id="review-empty" class="viewer-empty">
+            <strong>Chưa có ảnh</strong>
+            <span>Ảnh mới từ máy ZenConnect sẽ xuất hiện tại đây.</span>
+          </div>
           <img id="selected-image" alt="Ảnh chụp màn hình đang được xem" hidden>
           <button id="previous-button" class="nav-button previous" type="button" aria-label="Ảnh trước" title="Ảnh trước" disabled>
             <span aria-hidden="true">&#8249;</span>
@@ -140,6 +170,6 @@
 
   </section>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

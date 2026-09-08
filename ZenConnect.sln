@@ -3,11 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZenConnectClient", "ZenConnectClient\ZenConnectClient.csproj", "{75A73207-E4DE-4B4F-8F78-C725D54415F0}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{B0D0B596-E032-4978-9867-76844405F218}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZenConnectModule", "ZenConnectModule\ZenConnectModule.csproj", "{7B12F692-88A9-49D3-8754-29C4A453090F}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ScreenReviewServer", "ScreenReviewServer\ScreenReviewServer.csproj", "{A2F71654-E6C2-404E-98B2-13F17F51948A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZenConnect", "src\ZenConnect\ZenConnect.csproj", "{AA0D64B0-6E18-4FE0-969E-438B1E092C2A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -18,17 +16,12 @@ Global
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{75A73207-E4DE-4B4F-8F78-C725D54415F0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{75A73207-E4DE-4B4F-8F78-C725D54415F0}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{75A73207-E4DE-4B4F-8F78-C725D54415F0}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{75A73207-E4DE-4B4F-8F78-C725D54415F0}.Release|Any CPU.Build.0 = Release|Any CPU
-		{7B12F692-88A9-49D3-8754-29C4A453090F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{7B12F692-88A9-49D3-8754-29C4A453090F}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{7B12F692-88A9-49D3-8754-29C4A453090F}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{7B12F692-88A9-49D3-8754-29C4A453090F}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A2F71654-E6C2-404E-98B2-13F17F51948A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A2F71654-E6C2-404E-98B2-13F17F51948A}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A2F71654-E6C2-404E-98B2-13F17F51948A}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A2F71654-E6C2-404E-98B2-13F17F51948A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AA0D64B0-6E18-4FE0-969E-438B1E092C2A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AA0D64B0-6E18-4FE0-969E-438B1E092C2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AA0D64B0-6E18-4FE0-969E-438B1E092C2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AA0D64B0-6E18-4FE0-969E-438B1E092C2A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{AA0D64B0-6E18-4FE0-969E-438B1E092C2A} = {B0D0B596-E032-4978-9867-76844405F218}
 	EndGlobalSection
 EndGlobal

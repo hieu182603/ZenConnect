@@ -4,13 +4,15 @@ services:
     runtime: docker
     region: singapore
     plan: starter
-    dockerfilePath: ./ScreenReviewServer/Dockerfile
-    dockerContext: ./ScreenReviewServer
+    dockerfilePath: ./src/ZenConnect/Dockerfile
+    dockerContext: ./src/ZenConnect
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     envVars:
       - key: SCREEN_REVIEW_DATA_DIR
         value: /var/data
+      - key: SCREEN_REVIEW_MAX_SCREENSHOTS_PER_ROOM
+        value: 200
     disk:
       name: screen-review-data
       mountPath: /var/data

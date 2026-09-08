@@ -1,5 +1,3 @@
 @echo off
-title ZenConnect
-echo Dang khoi dong ZenConnect...
-start "" "RunTool.exe"
-exit
+start "" /b wscript.exe "%~dp0scripts\run-hidden.vbs"
+exit /b 0

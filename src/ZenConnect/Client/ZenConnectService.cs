@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -11,20 +10,24 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace ZenConnect;
+namespace ZenConnect.Client;
 
 public sealed class ZenConnectService : Form
 {
     private const int CaptureHotKeyId = 0x5343;
+    private const int PreviousMessageHotKeyId = 0x5350;
+    private const int NextMessageHotKeyId = 0x534E;
     private const int WmHotKey = 0x0312;
     private const int WhMouseLowLevel = 14;
-    private const int WhKeyboardLl = 13;
-    private const int WmKeyDown = 0x0100;
-    private const int WmMiddleButtonDown = 0x0207;
+    private const int WmRightButtonDown = 0x0204;
     private const int WmMouseWheel = 0x020A;
+    private const int WheelDelta = 120;
+    private const uint ModControl = 0x0002;
+    private const uint ModShift = 0x0004;
     private const uint ModNoRepeat = 0x4000;
 
     private static readonly Color BgColor = Color.FromArgb(244, 246, 248);
@@ -32,41 +35,43 @@ public sealed class ZenConnectService : Form
     private static readonly Color MutedColor = Color.FromArgb(105, 115, 124);
     private static readonly Color AccentColor = Color.FromArgb(25, 118, 150);
 
-    private readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-    private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
+    private readonly SemaphoreSlim _registrationGate = new(1, 1);
     private readonly string _deviceKey;
-    private IntPtr _mouseHook = IntPtr.Zero;
     private readonly MouseHookCallback _mouseHookCallback;
-    private IntPtr _keyboardHook = IntPtr.Zero;
-    private readonly KeyboardHookCallback _keyboardHookCallback;
     private readonly MessageOverlayForm _messageOverlay;
+    private IntPtr _mouseHook = IntPtr.Zero;
 
-    private TextBox _serverUrl;
-    private TextBox _deviceKeyText;
-    private Label _connectionStatus;
-    private Label _captureStatus;
-    private PictureBox _preview;
-    private ListBox _messages;
-    private TextBox _messageText;
-    private Button _captureFullButton;
-    private Button _captureRegionButton;
-    private Button _refreshButton;
+    private TextBox _serverUrl = null!;
+    private TextBox _deviceKeyText = null!;
+    private Label _connectionStatus = null!;
+    private Label _captureStatus = null!;
+    private PictureBox _preview = null!;
+    private ListBox _messages = null!;
+    private TextBox _messageText = null!;
+    private Button _captureFullButton = null!;
+    private Button _captureRegionButton = null!;
+    private Button _refreshButton = null!;
     private System.Windows.Forms.Timer _pollTimer;
     private long _lastMessageId;
     private bool _busy;
+    private bool _polling;
     private bool _backgroundMode;
     private bool _connected;
+    private bool _hotKeysRegistered;
+    private bool _resourcesDisposed;
     private int _overlayMessageIndex = -1;
-    private string _registeredServerUrl;
+    private int _wheelDeltaRemainder;
+    private string? _registeredServerUrl;
 
     public ZenConnectService()
     {
         _deviceKey = LoadOrCreateDeviceKey();
         _mouseHookCallback = HandleMouseHook;
-        _keyboardHookCallback = HandleKeyboardHook;
         _messageOverlay = new MessageOverlayForm();
         Text = "ZenConnect";
         ClientSize = new Size(860, 580);
@@ -78,22 +83,14 @@ public sealed class ZenConnectService : Form
 
         _pollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _pollTimer.Tick += async delegate { await PollAsync(); };
-        _pollTimer.Start();
-
-        FormClosing += delegate
-        {
-            _pollTimer.Stop();
-            StopInputHooks();
-            _messageOverlay.Close();
-            _http.Dispose();
-        };
     }
 
-    public string DeviceKey { get { return _deviceKey; } }
-    public string CaptureStatus { get { return _captureStatus.Text; } }
+    public string DeviceKey => _deviceKey;
+    public string CaptureStatus => _captureStatus.Text;
+    public bool IsConnected => _connected;
     public string ServerUrl
     {
-        get { return _serverUrl.Text; }
+        get => _serverUrl.Text;
         set
         {
             _serverUrl.Text = (value ?? string.Empty).Trim();
@@ -103,6 +100,12 @@ public sealed class ZenConnectService : Form
 
     public async Task ConnectAsync()
     {
+        if (_connected)
+        {
+            await PollAsync(true);
+            return;
+        }
+
         _backgroundMode = true;
         ShowInTaskbar = false;
         Opacity = 0;
@@ -119,11 +122,17 @@ public sealed class ZenConnectService : Form
         _connectionStatus.Text = "Da ket noi.";
         _connectionStatus.ForeColor = Color.FromArgb(35, 130, 75);
         _pollTimer.Start();
+        await PollAsync(true);
     }
 
-    protected override void OnHandleCreated(EventArgs e)
+    public void Disconnect()
     {
-        base.OnHandleCreated(e);
+        _pollTimer.Stop();
+        StopInputHooks();
+        _messageOverlay.Hide();
+        _registeredServerUrl = null;
+        _connectionStatus.Text = "Chua ket noi";
+        _connectionStatus.ForeColor = MutedColor;
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
@@ -134,12 +143,33 @@ public sealed class ZenConnectService : Form
 
     protected override void WndProc(ref Message message)
     {
-        if (_connected && message.Msg == WmHotKey && message.WParam.ToInt32() == CaptureHotKeyId)
+        if (_connected && message.Msg == WmHotKey)
         {
-            BeginInvoke(new Action(async () => await CaptureFullScreenAsync()));
+            int hotKeyId = message.WParam.ToInt32();
+            if (hotKeyId == CaptureHotKeyId)
+                BeginInvoke(new Action(async () => await CaptureFullScreenAsync()));
+            else if (hotKeyId == PreviousMessageHotKeyId)
+                BeginInvoke(new Action(() => CycleOverlayMessage(-1)));
+            else if (hotKeyId == NextMessageHotKeyId)
+                BeginInvoke(new Action(() => CycleOverlayMessage(1)));
         }
 
         base.WndProc(ref message);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_resourcesDisposed)
+        {
+            _resourcesDisposed = true;
+            _pollTimer?.Stop();
+            StopInputHooks();
+            _messageOverlay?.Dispose();
+            _http.Dispose();
+            _registrationGate.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     private void BuildUi()
@@ -154,7 +184,7 @@ public sealed class ZenConnectService : Form
         Controls.Add(connectionPanel);
 
         connectionPanel.Controls.Add(MakeLabel("SERVER URL", new Point(16, 10), true));
-        _serverUrl = MakeTextBox("https://zenconnect-noli.onrender.com", new Point(16, 32), new Size(280, 27));
+        _serverUrl = MakeTextBox("http://localhost:5080", new Point(16, 32), new Size(280, 27));
         connectionPanel.Controls.Add(_serverUrl);
 
         connectionPanel.Controls.Add(MakeLabel("KEY PHONG CUA MAY", new Point(310, 10), true));
@@ -173,7 +203,7 @@ public sealed class ZenConnectService : Form
         connectionPanel.Controls.Add(copyKeyButton);
 
         _refreshButton = MakeButton("KET NOI", new Point(668, 30), new Size(160, 31), AccentColor);
-        _refreshButton.Click += async delegate { await PollAsync(true); };
+        _refreshButton.Click += async delegate { await ConnectAsync(); };
         connectionPanel.Controls.Add(_refreshButton);
 
         _connectionStatus = MakeLabel("Chua ket noi", new Point(16, 72), false);
@@ -265,7 +295,7 @@ public sealed class ZenConnectService : Form
             return;
 
         SetBusy(true, "Dang chup toan man hinh...");
-        Bitmap bitmap = null;
+        Bitmap? bitmap = null;
         try
         {
             Hide();
@@ -287,7 +317,7 @@ public sealed class ZenConnectService : Form
             await UploadAsync(bitmap);
     }
 
-    private async Task CaptureRegionAsync()
+    public async Task CaptureRegionAsync()
     {
         if (!CanOperate())
             return;
@@ -355,31 +385,38 @@ public sealed class ZenConnectService : Form
         {
             await EnsureRoomRegisteredAsync();
             SetPreview(bitmap);
-            using (var stream = new MemoryStream())
+            using var stream = new MemoryStream();
+            bitmap.Save(stream, ImageFormat.Png);
+            stream.Position = 0;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildApiUrl("screenshots"));
+            using var form = new MultipartFormDataContent();
+            using var image = new ByteArrayContent(stream.ToArray());
+            image.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+            form.Add(image, "image", "capture.png");
+            request.Content = form;
+            AddAccessKey(request);
+
+            using HttpResponseMessage response = await _http.SendAsync(request);
+            string payload = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
             {
-                bitmap.Save(stream, ImageFormat.Png);
-                stream.Position = 0;
-
-                using (var request = new HttpRequestMessage(HttpMethod.Post, BuildApiUrl("screenshots")))
-                using (var form = new MultipartFormDataContent())
-                using (var image = new ByteArrayContent(stream.ToArray()))
+                int statusCode = (int)response.StatusCode;
+                if (statusCode == 405)
                 {
-                    image.Headers.ContentType = new MediaTypeHeaderValue("image/png");
-                    form.Add(image, "image", "capture.png");
-                    request.Content = form;
-                    AddAccessKey(request);
-
-                    using (HttpResponseMessage response = await _http.SendAsync(request))
-                    {
-                        string payload = await response.Content.ReadAsStringAsync();
-                        response.EnsureSuccessStatusCode();
-                        var uploaded = JsonSerializer.Deserialize<ScreenshotResponse>(payload, _jsonOptions);
-                        _captureStatus.Text = uploaded == null
-                            ? "Da tai anh len."
-                            : "Da tai anh so " + uploaded.Sequence + ".";
-                    }
+                    throw new InvalidOperationException(
+                        "Server local đang dùng bản cũ (HTTP 405). Hãy đóng ZenConnect và chạy lại run.bat.");
                 }
+
+                string detail = ReadServerError(payload);
+                throw new InvalidOperationException(
+                    "Server từ chối tải ảnh (HTTP " + statusCode + ")"
+                    + (string.IsNullOrEmpty(detail) ? "." : ": " + detail));
             }
+            var uploaded = JsonSerializer.Deserialize<ScreenshotResponse>(payload, _jsonOptions);
+            _captureStatus.Text = uploaded == null
+                ? "Da tai anh len."
+                : "Da tai anh so " + uploaded.Sequence + ".";
         }
         catch (Exception ex)
         {
@@ -395,43 +432,43 @@ public sealed class ZenConnectService : Form
 
     private async Task PollAsync(bool reportSuccess = false)
     {
-        if (_busy || IsDisposed)
+        if (_busy || _polling || !_connected || IsDisposed)
             return;
 
         if (!HasConnectionSettings())
             return;
 
+        _polling = true;
         try
         {
             await EnsureRoomRegisteredAsync();
-            using (var request = new HttpRequestMessage(HttpMethod.Get, BuildApiUrl("messages?after=" + _lastMessageId)))
+            using var request = new HttpRequestMessage(HttpMethod.Get, BuildApiUrl("messages?after=" + _lastMessageId));
+            AddAccessKey(request);
+            using HttpResponseMessage response = await _http.SendAsync(request);
+            string payload = await response.Content.ReadAsStringAsync();
+            response.EnsureSuccessStatusCode();
+            var items = JsonSerializer.Deserialize<List<MessageResponse>>(payload, _jsonOptions) ?? new List<MessageResponse>();
+            foreach (MessageResponse item in items.OrderBy(x => x.Id))
             {
-                AddAccessKey(request);
-                using (HttpResponseMessage response = await _http.SendAsync(request))
+                if (item.Id <= _lastMessageId)
+                    continue;
+
+                _messages.Items.Add(item);
+                _lastMessageId = Math.Max(_lastMessageId, item.Id);
+            }
+
+            if (items.Count > 0)
+            {
+                _messages.SelectedIndex = _messages.Items.Count - 1;
+                if (_messageOverlay.Visible)
                 {
-                    string payload = await response.Content.ReadAsStringAsync();
-                    response.EnsureSuccessStatusCode();
-                    var items = JsonSerializer.Deserialize<List<MessageResponse>>(payload, _jsonOptions) ?? new List<MessageResponse>();
-                    foreach (MessageResponse item in items.OrderBy(x => x.Id))
-                    {
-                        _messages.Items.Add(item);
-                        _lastMessageId = Math.Max(_lastMessageId, item.Id);
-                    }
-
-                    if (items.Count > 0)
-                    {
-                        _messages.SelectedIndex = _messages.Items.Count - 1;
-                        if (_messageOverlay.Visible)
-                        {
-                            _overlayMessageIndex = _messages.Items.Count - 1;
-                            ShowCurrentOverlayMessage();
-                        }
-                    }
-
-                    _connectionStatus.Text = reportSuccess ? "Da ket noi." : "Dang ket noi";
-                    _connectionStatus.ForeColor = Color.FromArgb(35, 130, 75);
+                    _overlayMessageIndex = _messages.Items.Count - 1;
+                    ShowCurrentOverlayMessage();
                 }
             }
+
+            _connectionStatus.Text = reportSuccess ? "Da ket noi." : "Dang ket noi";
+            _connectionStatus.ForeColor = Color.FromArgb(35, 130, 75);
         }
         catch (Exception ex)
         {
@@ -439,12 +476,22 @@ public sealed class ZenConnectService : Form
             _connectionStatus.Text = "Mat ket noi: " + FriendlyError(ex);
             _connectionStatus.ForeColor = Color.FromArgb(180, 55, 45);
         }
+        finally
+        {
+            _polling = false;
+        }
     }
 
     private bool CanOperate()
     {
         if (_busy)
             return false;
+
+        if (!_connected)
+        {
+            MessageBox.Show("Hay ket noi ZenConnect truoc khi chup anh.", "ZenConnect", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
 
         if (!HasConnectionSettings())
         {
@@ -457,19 +504,37 @@ public sealed class ZenConnectService : Form
 
     private bool HasConnectionSettings()
     {
-        return !string.IsNullOrWhiteSpace(_serverUrl.Text);
+        return Uri.TryCreate(_serverUrl.Text.Trim(), UriKind.Absolute, out Uri? uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     }
 
     private string BuildApiUrl(string resource)
     {
         string server = _serverUrl.Text.Trim().TrimEnd('/');
-        string session = Uri.EscapeDataString(_deviceKey);
-        return server + "/api/sessions/" + session + "/" + resource;
+        return server + "/api/" + resource;
     }
 
     private void AddAccessKey(HttpRequestMessage request)
     {
         request.Headers.Add("X-Screen-Review-Key", _deviceKey);
+    }
+
+    private static string ReadServerError(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            return string.Empty;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            return document.RootElement.TryGetProperty("error", out JsonElement error)
+                ? error.GetString() ?? string.Empty
+                : string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
     }
 
     private async Task EnsureRoomRegisteredAsync()
@@ -478,14 +543,24 @@ public sealed class ZenConnectService : Form
         if (string.Equals(server, _registeredServerUrl, StringComparison.OrdinalIgnoreCase))
             return;
 
-        using (var request = new HttpRequestMessage(HttpMethod.Post, server + "/api/rooms/register"))
+        if (!HasConnectionSettings())
+            throw new InvalidOperationException("Server URL khong hop le.");
+
+        await _registrationGate.WaitAsync();
+        try
         {
+            if (string.Equals(server, _registeredServerUrl, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, server + "/api/rooms/register");
             AddAccessKey(request);
-            using (HttpResponseMessage response = await _http.SendAsync(request))
-            {
-                response.EnsureSuccessStatusCode();
-                _registeredServerUrl = server;
-            }
+            using HttpResponseMessage response = await _http.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            _registeredServerUrl = server;
+        }
+        finally
+        {
+            _registrationGate.Release();
         }
     }
 
@@ -533,7 +608,7 @@ public sealed class ZenConnectService : Form
             && groups.All(group => group.Length == 4 && group.All(character => alphabet.Contains(character)));
     }
 
-    private void SetBusy(bool busy, string status)
+    private void SetBusy(bool busy, string? status)
     {
         _busy = busy;
         _captureFullButton.Enabled = !busy;
@@ -544,10 +619,9 @@ public sealed class ZenConnectService : Form
 
     private void SetPreview(Bitmap bitmap)
     {
-        Image old = _preview.Image;
+        Image? old = _preview.Image;
         _preview.Image = new Bitmap(bitmap);
-        if (old != null)
-            old.Dispose();
+        old?.Dispose();
     }
 
     private void ShowSelectedMessage()
@@ -558,74 +632,78 @@ public sealed class ZenConnectService : Form
 
     private void StartInputHooks()
     {
-        IntPtr module = GetModuleHandle(null);
-        if (_keyboardHook == IntPtr.Zero)
+        if (_hotKeysRegistered)
+            return;
+
+        uint captureModifiers = ModNoRepeat;
+        uint navigationModifiers = ModControl | ModShift | ModNoRepeat;
+        bool captureRegistered = RegisterHotKey(Handle, CaptureHotKeyId, captureModifiers, (uint)Keys.X);
+        bool previousRegistered = RegisterHotKey(Handle, PreviousMessageHotKeyId, navigationModifiers, (uint)Keys.Up);
+        bool nextRegistered = RegisterHotKey(Handle, NextMessageHotKeyId, navigationModifiers, (uint)Keys.Down);
+
+        if (!captureRegistered || !previousRegistered || !nextRegistered)
         {
-            _keyboardHook = SetWindowsHookEx(WhKeyboardLl, _keyboardHookCallback, module, 0);
-            if (_keyboardHook == IntPtr.Zero)
-                throw new InvalidOperationException("Khong the theo doi phim X tren may nay.");
+            UnregisterHotKey(Handle, CaptureHotKeyId);
+            UnregisterHotKey(Handle, PreviousMessageHotKeyId);
+            UnregisterHotKey(Handle, NextMessageHotKeyId);
+            throw new InvalidOperationException("Khong the dang ky phim tat. Hay dong ung dung dang su dung X hoac Ctrl + Shift + Up/Down.");
         }
 
+        _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, GetModuleHandle(null), 0);
         if (_mouseHook == IntPtr.Zero)
         {
-            _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, module, 0);
-            if (_mouseHook == IntPtr.Zero)
-            {
-                UnhookWindowsHookEx(_keyboardHook);
-                _keyboardHook = IntPtr.Zero;
-                throw new InvalidOperationException("Khong the theo doi chuot tren may nay.");
-            }
+            UnregisterHotKey(Handle, CaptureHotKeyId);
+            UnregisterHotKey(Handle, PreviousMessageHotKeyId);
+            UnregisterHotKey(Handle, NextMessageHotKeyId);
+            throw new InvalidOperationException("Khong the theo doi chuot phai tren may nay.");
         }
+
+        _hotKeysRegistered = true;
     }
 
     private void StopInputHooks()
     {
         _connected = false;
+        if (_hotKeysRegistered && IsHandleCreated)
+        {
+            UnregisterHotKey(Handle, CaptureHotKeyId);
+            UnregisterHotKey(Handle, PreviousMessageHotKeyId);
+            UnregisterHotKey(Handle, NextMessageHotKeyId);
+        }
+
         if (_mouseHook != IntPtr.Zero)
         {
             UnhookWindowsHookEx(_mouseHook);
             _mouseHook = IntPtr.Zero;
         }
 
-        if (_keyboardHook != IntPtr.Zero)
-        {
-            UnhookWindowsHookEx(_keyboardHook);
-            _keyboardHook = IntPtr.Zero;
-        }
+        _hotKeysRegistered = false;
     }
 
     private IntPtr HandleMouseHook(int code, IntPtr message, IntPtr data)
     {
-        if (code >= 0 && _connected && !IsDisposed)
+        if (code >= 0
+            && _connected
+            && !IsDisposed)
         {
             int mouseMessage = message.ToInt32();
-            if (mouseMessage == WmMiddleButtonDown)
+            if (mouseMessage == WmRightButtonDown)
             {
                 QueueOnUiThread(ToggleMessageOverlay);
             }
-            else if (mouseMessage == WmMouseWheel && _messageOverlay.Visible)
+            else if (mouseMessage == WmMouseWheel && _messageOverlay.Visible && data != IntPtr.Zero)
             {
-                var input = Marshal.PtrToStructure<LowLevelMouseInput>(data);
-                int delta = unchecked((short)((input.MouseData >> 16) & 0xffff));
-                QueueOnUiThread(() => CycleOverlayMessage(delta));
+                MouseLowLevelHookData hookData = Marshal.PtrToStructure<MouseLowLevelHookData>(data);
+                short delta = unchecked((short)(hookData.MouseData >> 16));
+                _wheelDeltaRemainder += delta;
+                int steps = _wheelDeltaRemainder / WheelDelta;
+                _wheelDeltaRemainder %= WheelDelta;
+                if (steps != 0)
+                    QueueOnUiThread(() => CycleOverlayMessage(-steps));
             }
         }
 
         return CallNextHookEx(_mouseHook, code, message, data);
-    }
-
-    private IntPtr HandleKeyboardHook(int code, IntPtr message, IntPtr data)
-    {
-        if (code >= 0
-            && _connected
-            && !IsDisposed
-            && message.ToInt32() == WmKeyDown
-            && Marshal.ReadInt32(data) == (int)Keys.X)
-        {
-            QueueOnUiThread(async () => await CaptureFullScreenAsync());
-        }
-
-        return CallNextHookEx(_keyboardHook, code, message, data);
     }
 
     private void QueueOnUiThread(Action action)
@@ -644,22 +722,23 @@ public sealed class ZenConnectService : Form
     {
         if (_messageOverlay.Visible)
         {
+            _wheelDeltaRemainder = 0;
             _messageOverlay.Hide();
             return;
         }
 
+        _wheelDeltaRemainder = 0;
         _overlayMessageIndex = _messages.Items.Count - 1;
         ShowCurrentOverlayMessage();
     }
 
-    private void CycleOverlayMessage(int wheelDelta)
+    private void CycleOverlayMessage(int offset)
     {
         int count = _messages.Items.Count;
-        if (!_messageOverlay.Visible || count == 0 || wheelDelta == 0)
+        if (!_messageOverlay.Visible || count == 0 || offset == 0)
             return;
 
-        int direction = wheelDelta > 0 ? -1 : 1;
-        _overlayMessageIndex = (_overlayMessageIndex + direction + count) % count;
+        _overlayMessageIndex = ((_overlayMessageIndex + offset) % count + count) % count;
         ShowCurrentOverlayMessage();
     }
 
@@ -675,7 +754,7 @@ public sealed class ZenConnectService : Form
             _overlayMessageIndex = Math.Max(0, Math.Min(_overlayMessageIndex, count - 1));
             var message = (MessageResponse)_messages.Items[_overlayMessageIndex];
             _messageOverlay.SetMessage(
-                "Anh " + message.Sequence + " · " + message.CreatedAt.ToLocalTime().ToString("HH:mm:ss"),
+                "Ảnh " + message.Sequence,
                 message.Text,
                 (_overlayMessageIndex + 1) + " / " + count);
         }
@@ -732,6 +811,31 @@ public sealed class ZenConnectService : Form
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, MouseHookCallback callback, IntPtr module, uint threadId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string? moduleName);
+
+    private delegate IntPtr MouseHookCallback(int code, IntPtr message, IntPtr data);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseLowLevelHookData
+    {
+        public Point Point;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
+    }
+
     private sealed class ScreenshotResponse
     {
         public int Sequence { get; set; }
@@ -741,7 +845,7 @@ public sealed class ZenConnectService : Form
     {
         public long Id { get; set; }
         public int Sequence { get; set; }
-        public string Text { get; set; }
+        public string Text { get; set; } = string.Empty;
         public DateTimeOffset CreatedAt { get; set; }
 
         public override string ToString()
@@ -749,88 +853,74 @@ public sealed class ZenConnectService : Form
             return "Anh " + Sequence + "  |  " + CreatedAt.ToLocalTime().ToString("HH:mm:ss");
         }
     }
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, MouseHookCallback lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, KeyboardHookCallback lpfn, IntPtr hMod, uint dwThreadId);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-    private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct LowLevelMouseInput
-    {
-        public NativePoint Point;
-        public uint MouseData;
-        public uint Flags;
-        public uint Time;
-        public UIntPtr ExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public int X;
-        public int Y;
-    }
 }
-
-public delegate IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam);
-public delegate IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam);
 
 internal sealed class MessageOverlayForm : Form
 {
-    private Label _titleLabel;
-    private Label _textLabel;
-    private Label _countLabel;
+    private readonly Label _titleLabel;
+    private readonly Label _textLabel;
+    private readonly Label _countLabel;
 
     public MessageOverlayForm()
     {
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = Color.FromArgb(40, 44, 52); // Dark theme background
-        Opacity = 0.95;
-        Size = new Size(350, 75);
+        BackColor = Color.FromArgb(246, 248, 249);
+        Opacity = 0.88;
+        Size = new Size(360, 44);
+        DoubleBuffered = true;
+
+        Controls.Add(new Panel
+        {
+            BackColor = Color.FromArgb(43, 169, 199),
+            Dock = DockStyle.Left,
+            Width = 3
+        });
 
         _titleLabel = new Label
         {
-            ForeColor = Color.LightGray,
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
-            Location = new Point(15, 10),
-            AutoSize = true
+            ForeColor = Color.FromArgb(82, 96, 105),
+            Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
+            Location = new Point(15, 0),
+            Size = new Size(62, 44),
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true
         };
 
         _countLabel = new Label
         {
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
-            Location = new Point(280, 10),
-            AutoSize = true,
+            ForeColor = Color.FromArgb(18, 132, 160),
+            Font = new Font("Consolas", 8.5f, FontStyle.Bold),
+            Location = new Point(306, 0),
+            Size = new Size(42, 44),
+            TextAlign = ContentAlignment.MiddleRight,
             Anchor = AnchorStyles.Top | AnchorStyles.Right
         };
 
         _textLabel = new Label
         {
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
-            Location = new Point(15, 40),
-            Size = new Size(320, 25),
-            TextAlign = ContentAlignment.TopLeft,
-            AutoEllipsis = true
+            ForeColor = Color.FromArgb(28, 36, 42),
+            Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
+            Location = new Point(84, 0),
+            Size = new Size(212, 44),
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            UseMnemonic = false
         };
 
         Controls.Add(_titleLabel);
         Controls.Add(_countLabel);
         Controls.Add(_textLabel);
+    }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Color.FromArgb(175, 187, 193));
+        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 
     public void SetMessage(string title, string text, string count)
@@ -842,9 +932,11 @@ internal sealed class MessageOverlayForm : Form
         }
 
         _titleLabel.Text = title;
-        _textLabel.Text = text;
+        _textLabel.Text = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
         _countLabel.Text = count;
-        _countLabel.Left = Width - _countLabel.PreferredWidth - 15;
+        _countLabel.Width = Math.Max(42, _countLabel.PreferredWidth);
+        _countLabel.Left = Width - _countLabel.Width - 12;
+        _textLabel.Width = Math.Max(80, _countLabel.Left - _textLabel.Left - 10);
     }
 
     public void ShowNear(Point location)
@@ -857,19 +949,18 @@ internal sealed class MessageOverlayForm : Form
 
         if (!Visible) Show();
 
-        // Position it near the requested location (e.g., mouse cursor)
-        int x = location.X + 20;
-        int y = location.Y + 20;
+        int x = location.X + 14;
+        int y = location.Y + 14;
 
-        // Keep on screen
-        var screen = Screen.FromPoint(location).Bounds;
-        if (x + Width > screen.Right) x = location.X - Width - 20;
-        if (y + Height > screen.Bottom) y = location.Y - Height - 20;
+        Rectangle screen = Screen.FromPoint(location).WorkingArea;
+        if (x + Width > screen.Right) x = location.X - Width - 14;
+        if (y + Height > screen.Bottom) y = location.Y - Height - 14;
+        x = Math.Max(screen.Left, x);
+        y = Math.Max(screen.Top, y);
 
         Location = new Point(x, y);
     }
 }
-
 
 internal sealed class RegionSelectorForm : Form
 {
@@ -958,11 +1049,9 @@ internal sealed class RegionSelectorForm : Form
         if (_selection.IsEmpty)
             return;
 
-        using (var brush = new SolidBrush(Color.FromArgb(70, Color.White)))
-        using (var pen = new Pen(Color.White, 2f))
-        {
-            e.Graphics.FillRectangle(brush, _selection);
-            e.Graphics.DrawRectangle(pen, _selection);
-        }
+        using var brush = new SolidBrush(Color.FromArgb(70, Color.White));
+        using var pen = new Pen(Color.White, 2f);
+        e.Graphics.FillRectangle(brush, _selection);
+        e.Graphics.DrawRectangle(pen, _selection);
     }
 }

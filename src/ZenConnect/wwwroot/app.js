@@ -6,6 +6,10 @@ const state = {
   refreshTimer: null,
   roomJoined: false,
   roomCode: null,
+  refreshing: false,
+  deletingScreenshot: false,
+  deletingMessageIds: new Set(),
+  generation: 0,
 };
 
 const elements = {
@@ -19,6 +23,7 @@ const elements = {
   entryStatus: document.querySelector("#entry-status"),
   roomSession: document.querySelector("#room-session"),
   leaveButton: document.querySelector("#leave-button"),
+  refreshButton: document.querySelector("#refresh-button"),
   status: document.querySelector("#status"),
   statusDot: document.querySelector("#status-dot"),
   chatContext: document.querySelector("#chat-context"),
@@ -34,6 +39,9 @@ const elements = {
   sequence: document.querySelector("#sequence"),
   createdAt: document.querySelector("#created-at"),
   handled: document.querySelector("#handled"),
+  deleteButton: document.querySelector("#delete-button"),
+  deleteLabel: document.querySelector("#delete-label"),
+  imageStage: document.querySelector("#image-stage"),
   reviewEmpty: document.querySelector("#review-empty"),
   selectedImage: document.querySelector("#selected-image"),
   previousButton: document.querySelector("#previous-button"),
@@ -55,6 +63,7 @@ elements.toggleKey.addEventListener("click", () => {
 });
 
 elements.leaveButton.addEventListener("click", leaveRoom);
+elements.refreshButton.addEventListener("click", refreshRoom);
 
 elements.messageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -62,12 +71,17 @@ elements.messageForm.addEventListener("submit", async (event) => {
 });
 
 elements.message.addEventListener("input", updateCharacterCount);
+elements.accessKey.addEventListener("input", formatAccessKey);
 elements.previousButton.addEventListener("click", () => selectOffset(-1));
 elements.nextButton.addEventListener("click", () => selectOffset(1));
+elements.deleteButton.addEventListener("click", deleteSelectedScreenshot);
 
 elements.handled.addEventListener("change", async () => {
   const current = getSelected();
-  if (!state.roomJoined || !current) return;
+  if (!state.roomJoined || !current || state.refreshing || hasPendingDelete()) {
+    renderViewer();
+    return;
+  }
 
   try {
     await api(`/api/screenshots/${current.id}/handled`, {
@@ -96,44 +110,58 @@ async function joinRoom() {
     setEntryStatus("Nhập key hiển thị trên máy cần xem.", true);
     return;
   }
+  if (!/^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){4}$/.test(accessKey)) {
+    setEntryStatus("Room key chưa đúng định dạng XXXX-XXXX-XXXX-XXXX-XXXX.", true);
+    return;
+  }
   elements.accessKey.value = accessKey;
 
   setConnecting(true);
   setEntryStatus("Đang xác thực phòng...", false);
+  const generation = ++state.generation;
   try {
     const room = await api("/api/room");
+    if (generation !== state.generation) return;
     state.roomCode = room.session;
-    await fetchWorkspaceData();
+    await fetchWorkspaceData(generation);
+    if (generation !== state.generation) return;
     enterRoom(state.roomCode);
   } catch (error) {
+    state.roomCode = null;
+    setRoomLoading(false);
     setEntryStatus(error.message, true);
   } finally {
     setConnecting(false);
   }
 }
 
-async function fetchWorkspaceData() {
+async function fetchWorkspaceData(generation = state.generation) {
   const session = state.roomCode;
   if (!session) throw new Error("Server chưa cấu hình phòng.");
+  setRoomLoading(true);
   const [screenshots, messages] = await Promise.all([
-    api(`/api/sessions/${encodeURIComponent(session)}/screenshots`),
-    api(`/api/sessions/${encodeURIComponent(session)}/messages?after=0`),
+    api("/api/screenshots"),
+    api("/api/messages?after=0"),
   ]);
 
+  if (generation !== state.generation || session !== state.roomCode) return;
   state.screenshots = screenshots;
   state.messages = messages;
-  await loadImages(screenshots);
+  await loadImages(screenshots, generation);
+  if (generation !== state.generation || session !== state.roomCode) return;
 
   if (!screenshots.some((item) => item.id === state.selectedId)) {
     state.selectedId = screenshots.at(-1)?.id ?? null;
   }
 
   renderAll();
+  setRoomLoading(false);
 }
 
 function enterRoom(session) {
   state.roomJoined = true;
-  elements.roomSession.textContent = `PHÒNG ${session.toUpperCase()}`;
+  const lastGroup = session.toUpperCase().split("-").at(-1);
+  elements.roomSession.textContent = `PHÒNG ••••-${lastGroup}`;
   elements.entryScreen.hidden = true;
   elements.roomScreen.hidden = false;
   document.body.classList.add("room-active");
@@ -143,8 +171,10 @@ function enterRoom(session) {
 
 function leaveRoom() {
   state.roomJoined = false;
+  state.generation += 1;
   window.clearInterval(state.refreshTimer);
   state.refreshTimer = null;
+  setRoomLoading(false);
   resetWorkspace();
 
   elements.roomScreen.hidden = true;
@@ -156,16 +186,21 @@ function leaveRoom() {
   elements.message.value = "";
   updateCharacterCount();
   setEntryStatus("Key được tạo tự động khi ZenConnect chạy lần đầu.", false);
-  elements.accessKey.focus();
+  elements.accessKey.focus({ preventScroll: true });
 }
 
 async function refreshRoom() {
-  if (!state.roomJoined) return;
+  if (!state.roomJoined || state.refreshing || hasPendingDelete()) return;
+  state.refreshing = true;
   try {
-    await fetchWorkspaceData();
+    await fetchWorkspaceData(state.generation);
     setRoomConnection(`Đã kết nối · ${state.screenshots.length} ảnh`, false);
   } catch (error) {
     setRoomConnection(error.message, true);
+    setRoomLoading(false);
+  } finally {
+    state.refreshing = false;
+    elements.refreshButton.disabled = false;
   }
 }
 
@@ -176,10 +211,12 @@ function resetWorkspace() {
   state.messages = [];
   state.selectedId = null;
   state.roomCode = null;
+  state.deletingScreenshot = false;
+  state.deletingMessageIds.clear();
   renderAll();
 }
 
-async function loadImages(items) {
+async function loadImages(items, generation) {
   const activeIds = new Set(items.map((item) => item.id));
   for (const [id, url] of state.objectUrls) {
     if (!activeIds.has(id)) {
@@ -190,12 +227,21 @@ async function loadImages(items) {
 
   await Promise.all(items.map(async (item) => {
     if (state.objectUrls.has(item.id)) return;
-    const response = await fetch(item.imageUrl, { headers: authHeaders() });
-    if (!response.ok) {
-      const errStr = await responseError(response);
-      throw new Error(`${item.imageUrl}: ${errStr}`);
+    try {
+      const response = await fetch(item.imageUrl, { headers: authHeaders() });
+      if (!response.ok) {
+        console.warn(`Failed to load image ${item.imageUrl}: HTTP ${response.status}`);
+        return;
+      }
+      const objectUrl = URL.createObjectURL(await response.blob());
+      if (generation !== state.generation) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      state.objectUrls.set(item.id, objectUrl);
+    } catch (err) {
+      console.warn(`Network error loading ${item.imageUrl}:`, err);
     }
-    state.objectUrls.set(item.id, URL.createObjectURL(await response.blob()));
   }));
 }
 
@@ -210,14 +256,19 @@ function renderViewer() {
   const index = getSelectedIndex();
   const total = state.screenshots.length;
   const hasCurrent = Boolean(current);
+  const deleting = hasPendingDelete();
 
   elements.reviewEmpty.hidden = hasCurrent;
   elements.selectedImage.hidden = !hasCurrent;
-  elements.handled.disabled = !hasCurrent;
-  elements.message.disabled = !hasCurrent;
-  elements.sendButton.disabled = !hasCurrent;
-  elements.previousButton.disabled = index <= 0;
-  elements.nextButton.disabled = index < 0 || index >= total - 1;
+  elements.handled.disabled = !hasCurrent || state.refreshing || deleting;
+  elements.message.disabled = !hasCurrent || state.refreshing || deleting;
+  elements.sendButton.disabled = !hasCurrent || state.refreshing || deleting;
+  elements.deleteButton.disabled = !hasCurrent || state.refreshing || deleting;
+  elements.deleteButton.classList.toggle("is-loading", state.deletingScreenshot);
+  elements.deleteButton.setAttribute("aria-busy", String(state.deletingScreenshot));
+  elements.deleteLabel.textContent = state.deletingScreenshot ? "Đang xóa" : "Xóa ảnh";
+  elements.previousButton.disabled = deleting || index <= 0;
+  elements.nextButton.disabled = deleting || index < 0 || index >= total - 1;
   elements.previousButton.hidden = !hasCurrent;
   elements.nextButton.hidden = !hasCurrent;
   elements.imageCount.textContent = hasCurrent ? `${index + 1} / ${total}` : `0 / ${total}`;
@@ -251,6 +302,7 @@ function renderFilmstrip() {
     button.className = `thumbnail-button${item.id === state.selectedId ? " active" : ""}`;
     button.title = `Mở ảnh ${item.sequence}`;
     button.setAttribute("aria-label", `Mở ảnh ${item.sequence}`);
+    button.disabled = hasPendingDelete();
     button.addEventListener("click", () => selectScreenshot(item.id));
 
     const image = document.createElement("img");
@@ -289,7 +341,10 @@ function renderChat() {
     wrapper.tabIndex = 0;
     wrapper.addEventListener("click", () => selectScreenshot(item.screenshotId));
     wrapper.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") selectScreenshot(item.screenshotId);
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectScreenshot(item.screenshotId);
+      }
     });
 
     const badge = document.createElement("span");
@@ -305,7 +360,22 @@ function renderChat() {
     author.textContent = `Phản hồi · Ảnh ${item.sequence}`;
     const time = document.createElement("time");
     time.textContent = formatTime(item.createdAt);
-    meta.append(author, time);
+    const metaActions = document.createElement("div");
+    metaActions.className = "message-meta-actions";
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "message-delete-button";
+    deleteButton.textContent = state.deletingMessageIds.has(item.id) ? "Đang xóa" : "Xóa";
+    deleteButton.title = `Xóa phản hồi ảnh ${item.sequence}`;
+    deleteButton.setAttribute("aria-label", `Xóa phản hồi ảnh ${item.sequence}`);
+    deleteButton.disabled = state.refreshing || hasPendingDelete();
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteMessage(item);
+    });
+    deleteButton.addEventListener("keydown", (event) => event.stopPropagation());
+    metaActions.append(time, deleteButton);
+    meta.append(author, metaActions);
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
@@ -323,7 +393,7 @@ function renderChat() {
 async function sendMessage() {
   const current = getSelected();
   const text = elements.message.value.trim();
-  if (!state.roomJoined || !current || !text) return;
+  if (!state.roomJoined || !current || !text || state.refreshing || hasPendingDelete()) return;
 
   setMessageLoading(true);
   try {
@@ -346,7 +416,60 @@ async function sendMessage() {
   }
 }
 
+async function deleteSelectedScreenshot() {
+  const current = getSelected();
+  if (!state.roomJoined || !current || state.refreshing || hasPendingDelete()) return;
+
+  const relatedMessageCount = state.messages.filter((item) => item.screenshotId === current.id).length;
+  const relatedText = relatedMessageCount > 0
+    ? ` và ${relatedMessageCount} phản hồi liên quan`
+    : "";
+  if (!window.confirm(`Xóa vĩnh viễn ảnh ${current.sequence}${relatedText}? Hành động này không thể hoàn tác.`)) return;
+
+  const deletedIndex = getSelectedIndex();
+  state.deletingScreenshot = true;
+  renderAll();
+  try {
+    await api(`/api/screenshots/${current.id}`, { method: "DELETE" });
+
+    const objectUrl = state.objectUrls.get(current.id);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    state.objectUrls.delete(current.id);
+    state.screenshots = state.screenshots.filter((item) => item.id !== current.id);
+    state.messages = state.messages.filter((item) => item.screenshotId !== current.id);
+    state.selectedId = state.screenshots[Math.min(deletedIndex, state.screenshots.length - 1)]?.id ?? null;
+    elements.message.value = "";
+    elements.messageStatus.textContent = "";
+    updateCharacterCount();
+    setRoomConnection(`Đã xóa ảnh ${current.sequence} · ${state.screenshots.length} ảnh còn lại`, false);
+  } catch (error) {
+    setRoomConnection(error.message, true);
+  } finally {
+    state.deletingScreenshot = false;
+    renderAll();
+  }
+}
+
+async function deleteMessage(item) {
+  if (!state.roomJoined || state.refreshing || hasPendingDelete()) return;
+  if (!window.confirm(`Xóa phản hồi của ảnh ${item.sequence}? Hành động này không thể hoàn tác.`)) return;
+
+  state.deletingMessageIds.add(item.id);
+  renderAll();
+  try {
+    await api(`/api/messages/${item.id}`, { method: "DELETE" });
+    state.messages = state.messages.filter((message) => message.id !== item.id);
+    elements.messageStatus.textContent = `Đã xóa phản hồi ảnh ${item.sequence}`;
+  } catch (error) {
+    setRoomConnection(error.message, true);
+  } finally {
+    state.deletingMessageIds.delete(item.id);
+    renderAll();
+  }
+}
+
 function selectScreenshot(id) {
+  if (hasPendingDelete()) return;
   if (!state.screenshots.some((item) => item.id === id)) return;
   state.selectedId = id;
   elements.messageStatus.textContent = "";
@@ -367,6 +490,10 @@ function getSelectedIndex() {
   return state.screenshots.findIndex((item) => item.id === state.selectedId);
 }
 
+function hasPendingDelete() {
+  return state.deletingScreenshot || state.deletingMessageIds.size > 0;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -376,10 +503,10 @@ async function api(path, options = {}) {
       ...(options.headers ?? {}),
     },
   });
-    if (!response.ok) {
-      const errStr = await responseError(response);
-      throw new Error(`${path}: ${errStr}`);
-    }
+  if (!response.ok) {
+    const errStr = await responseError(response);
+    throw new Error(errStr);
+  }
   if (response.status === 204) return null;
   return response.json();
 }
@@ -401,6 +528,25 @@ async function responseError(response) {
 function startAutoRefresh() {
   window.clearInterval(state.refreshTimer);
   state.refreshTimer = window.setInterval(refreshRoom, 5000);
+}
+
+function setRoomLoading(loading) {
+  elements.roomScreen.classList.toggle("is-loading", loading);
+  elements.messageList.setAttribute("aria-busy", String(loading));
+  elements.imageStage.setAttribute("aria-busy", String(loading));
+  elements.refreshButton.disabled = loading;
+  elements.deleteButton.disabled = loading || !getSelected() || hasPendingDelete();
+  for (const button of elements.messageList.querySelectorAll(".message-delete-button")) {
+    button.disabled = loading || hasPendingDelete();
+  }
+  if (state.screenshots.length === 0) {
+    const title = elements.reviewEmpty.querySelector("strong");
+    const description = elements.reviewEmpty.querySelector("span");
+    title.textContent = loading ? "Đang tải phòng" : "Chưa có ảnh";
+    description.textContent = loading
+      ? "ZenConnect đang đồng bộ ảnh và phản hồi."
+      : "Ảnh mới từ máy ZenConnect sẽ xuất hiện tại đây.";
+  }
 }
 
 function setEntryStatus(text, error) {
@@ -428,6 +574,14 @@ function updateCharacterCount() {
   elements.characterCount.textContent = `${elements.message.value.length} / 2000`;
 }
 
+function formatAccessKey() {
+  const compact = elements.accessKey.value
+    .toUpperCase()
+    .replace(/[^A-HJ-NP-Z2-9]/g, "")
+    .slice(0, 20);
+  elements.accessKey.value = compact.match(/.{1,4}/g)?.join("-") ?? "";
+}
+
 function padNumber(value) {
   return String(value).padStart(2, "0");
 }
@@ -452,4 +606,4 @@ window.addEventListener("beforeunload", () => {
 });
 
 updateCharacterCount();
-elements.accessKey.focus();
+elements.accessKey.focus({ preventScroll: true });

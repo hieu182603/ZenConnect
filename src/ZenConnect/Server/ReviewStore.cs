@@ -1,214 +1,38 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Microsoft.AspNetCore.Http.Features;
+using System.Threading;
+using System.Threading.Tasks;
 
-var builder = WebApplication.CreateBuilder(args);
+namespace ZenConnect.Server;
 
-string? renderPort = Environment.GetEnvironmentVariable("PORT");
-if (int.TryParse(renderPort, out int port) && port > 0 && port <= 65535)
-    builder.WebHost.UseUrls("http://0.0.0.0:" + port);
-
-builder.Services.Configure<FormOptions>(options =>
-{
-    options.MultipartBodyLengthLimit = 12 * 1024 * 1024;
-});
-
-string dataDirectory = Environment.GetEnvironmentVariable("SCREEN_REVIEW_DATA_DIR")
-    ?? Path.Combine(builder.Environment.ContentRootPath, "App_Data");
-builder.Services.AddSingleton(new ReviewStore(dataDirectory));
-
-var app = builder.Build();
-
-app.UseDefaultFiles();
-app.UseStaticFiles();
-
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
-app.MapPost("/api/rooms/register", async (HttpRequest request, ReviewStore store) =>
-{
-    string roomKey = GetRoomKey(request);
-    if (!RoomKey.IsValid(roomKey))
-        return Results.BadRequest(new { error = RoomKey.Error });
-
-    await store.RegisterRoomAsync(roomKey);
-    return Results.Ok(new { session = roomKey });
-});
-
-app.MapGet("/api/room", async (HttpRequest request, ReviewStore store) =>
-{
-    string roomKey = GetRoomKey(request);
-    if (!RoomKey.IsValid(roomKey) || !await store.RoomExistsAsync(roomKey))
-        return InvalidRoomKey();
-
-    return Results.Ok(new { session = roomKey });
-});
-
-app.MapGet("/api/sessions/{session}/screenshots", async (string session, HttpRequest request, ReviewStore store) =>
-{
-    if (!await CanAccessRoomAsync(request, session, store))
-        return InvalidRoomKey();
-
-    var screenshots = await store.GetScreenshotsAsync(session);
-    return Results.Ok(screenshots.Select(item => new
-    {
-        item.Id,
-        item.Sequence,
-        item.CreatedAt,
-        item.Handled,
-        imageUrl = "/api/screenshots/" + item.Id + "/image",
-        message = item.MessageText
-    }));
-});
-
-app.MapPost("/api/sessions/{session}/screenshots", async (string session, HttpRequest request, ReviewStore store) =>
-{
-    if (!await CanAccessRoomAsync(request, session, store))
-        return InvalidRoomKey();
-    if (!request.HasFormContentType)
-        return Results.BadRequest(new { error = "Expected multipart form data." });
-
-    IFormCollection form = await request.ReadFormAsync();
-    IFormFile? image = form.Files.GetFile("image");
-    if (image == null || image.Length == 0)
-        return Results.BadRequest(new { error = "Image is required." });
-    if (image.Length > 10 * 1024 * 1024)
-        return Results.BadRequest(new { error = "Image exceeds the 10 MB limit." });
-    if (!string.Equals(image.ContentType, "image/png", StringComparison.OrdinalIgnoreCase))
-        return Results.BadRequest(new { error = "Only PNG images are accepted." });
-
-    string fileName = Guid.NewGuid().ToString("N") + ".png";
-    string destination = store.GetImagePath(fileName);
-    await using (var output = File.Create(destination))
-        await image.CopyToAsync(output);
-
-    if (!await IsPngAsync(destination))
-    {
-        File.Delete(destination);
-        return Results.BadRequest(new { error = "The uploaded file is not a valid PNG." });
-    }
-
-    ScreenshotRecord created = await store.AddScreenshotAsync(session, fileName);
-    return Results.Ok(new
-    {
-        created.Id,
-        created.Sequence,
-        created.CreatedAt
-    });
-});
-
-app.MapGet("/api/screenshots/{id:guid}/image", async (Guid id, HttpRequest request, ReviewStore store) =>
-{
-    ScreenshotRecord? screenshot = await store.FindScreenshotAsync(id);
-    if (screenshot == null)
-        return Results.NotFound();
-    if (!MatchesRoomKey(request, screenshot.Session))
-        return InvalidRoomKey();
-
-    string path = store.GetImagePath(screenshot.FileName);
-    return File.Exists(path)
-        ? Results.File(path, "image/png", enableRangeProcessing: true)
-        : Results.NotFound();
-});
-
-app.MapPost("/api/screenshots/{id:guid}/message", async (Guid id, MessageRequest message, HttpRequest request, ReviewStore store) =>
-{
-    ScreenshotRecord? screenshot = await store.FindScreenshotAsync(id);
-    if (screenshot == null)
-        return Results.NotFound();
-    if (!MatchesRoomKey(request, screenshot.Session))
-        return InvalidRoomKey();
-
-    string text = (message.Text ?? string.Empty).Trim();
-    if (text.Length == 0)
-        return Results.BadRequest(new { error = "Message cannot be empty." });
-    if (text.Length > 2000)
-        return Results.BadRequest(new { error = "Message exceeds 2000 characters." });
-
-    MessageView? created = await store.AddMessageAsync(id, text);
-    return created == null ? Results.NotFound() : Results.Ok(created);
-});
-
-app.MapPatch("/api/screenshots/{id:guid}/handled", async (Guid id, HandledRequest handled, HttpRequest request, ReviewStore store) =>
-{
-    ScreenshotRecord? screenshot = await store.FindScreenshotAsync(id);
-    if (screenshot == null)
-        return Results.NotFound();
-    if (!MatchesRoomKey(request, screenshot.Session))
-        return InvalidRoomKey();
-
-    bool updated = await store.SetHandledAsync(id, handled.Handled);
-    return updated ? Results.NoContent() : Results.NotFound();
-});
-
-app.MapGet("/api/sessions/{session}/messages", async (string session, long? after, HttpRequest request, ReviewStore store) =>
-{
-    if (!await CanAccessRoomAsync(request, session, store))
-        return InvalidRoomKey();
-
-    return Results.Ok(await store.GetMessagesAsync(session, Math.Max(0, after ?? 0)));
-});
-
-app.MapFallbackToFile("index.html");
-app.Run();
-
-static string GetRoomKey(HttpRequest request)
-{
-    return request.Headers["X-Screen-Review-Key"].ToString().Trim().ToUpperInvariant();
-}
-
-static bool FixedTimeEquals(string supplied, string expected)
-{
-    byte[] left = System.Text.Encoding.UTF8.GetBytes(supplied);
-    byte[] right = System.Text.Encoding.UTF8.GetBytes(expected);
-    return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(left, right);
-}
-
-static bool MatchesRoomKey(HttpRequest request, string roomKey)
-{
-    string supplied = GetRoomKey(request);
-    return RoomKey.IsValid(supplied) && FixedTimeEquals(supplied, roomKey.ToUpperInvariant());
-}
-
-static async Task<bool> CanAccessRoomAsync(HttpRequest request, string roomKey, ReviewStore store)
-{
-    return RoomKey.IsValid(roomKey)
-        && MatchesRoomKey(request, roomKey)
-        && await store.RoomExistsAsync(roomKey);
-}
-
-static IResult InvalidRoomKey()
-{
-    return Results.Json(new { error = "Room key is invalid or the room is not registered." }, statusCode: 401);
-}
-
-static async Task<bool> IsPngAsync(string path)
-{
-    byte[] expected = { 137, 80, 78, 71, 13, 10, 26, 10 };
-    byte[] actual = new byte[expected.Length];
-    await using var stream = File.OpenRead(path);
-    int read = await stream.ReadAsync(actual);
-    return read == expected.Length && actual.SequenceEqual(expected);
-}
-
-static class RoomKey
+public static class RoomKey
 {
     public const string Error = "Room key must use the format XXXX-XXXX-XXXX-XXXX-XXXX.";
     private static readonly Regex Pattern = new("^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){4}$", RegexOptions.Compiled);
-    public static bool IsValid(string value) => Pattern.IsMatch(value ?? string.Empty);
+    public static bool IsValid(string? value) => Pattern.IsMatch(value ?? string.Empty);
 }
 
-sealed class ReviewStore
+public sealed class ReviewStore
 {
     private readonly string _storePath;
+    private readonly string _backupPath;
     private readonly string _imageDirectory;
+    private readonly int _maxScreenshotsPerRoom;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
 
-    public ReviewStore(string dataDirectory)
+    public ReviewStore(string dataDirectory, int maxScreenshotsPerRoom)
     {
         Directory.CreateDirectory(dataDirectory);
         _imageDirectory = Path.Combine(dataDirectory, "images");
         Directory.CreateDirectory(_imageDirectory);
         _storePath = Path.Combine(dataDirectory, "store.json");
+        _backupPath = Path.Combine(dataDirectory, "store.backup.json");
+        _maxScreenshotsPerRoom = maxScreenshotsPerRoom;
     }
 
     public string GetImagePath(string fileName) => Path.Combine(_imageDirectory, Path.GetFileName(fileName));
@@ -271,7 +95,22 @@ sealed class ReviewStore
                 CreatedAt = DateTimeOffset.UtcNow
             };
             state.Screenshots.Add(screenshot);
+
+            List<ScreenshotRecord> overflow = state.Screenshots
+                .Where(item => string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(item => item.Sequence)
+                .Skip(_maxScreenshotsPerRoom)
+                .ToList();
+            if (overflow.Count > 0)
+            {
+                HashSet<Guid> expiredIds = overflow.Select(item => item.Id).ToHashSet();
+                state.Messages.RemoveAll(item => expiredIds.Contains(item.ScreenshotId));
+                state.Screenshots.RemoveAll(item => expiredIds.Contains(item.Id));
+            }
+
             await SaveAsync(state);
+            foreach (ScreenshotRecord expired in overflow)
+                DeleteImageFile(expired.FileName);
             return screenshot;
         }
         finally
@@ -374,6 +213,65 @@ sealed class ReviewStore
         }
     }
 
+    public async Task<ScreenshotDeleteResult?> DeleteScreenshotAsync(Guid screenshotId, string session)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            StorageState state = await LoadAsync();
+            ScreenshotRecord? screenshot = state.Screenshots.FirstOrDefault(item =>
+                item.Id == screenshotId
+                && string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase));
+            if (screenshot == null)
+                return null;
+
+            int deletedMessageCount = state.Messages.RemoveAll(item => item.ScreenshotId == screenshotId);
+            state.Screenshots.Remove(screenshot);
+            await SaveAsync(state);
+
+            return new ScreenshotDeleteResult
+            {
+                Id = screenshot.Id,
+                Sequence = screenshot.Sequence,
+                DeletedMessageCount = deletedMessageCount,
+                ImageDeleted = DeleteImageFile(screenshot.FileName)
+            };
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<MessageDeleteResult?> DeleteMessageAsync(long messageId, string session)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            StorageState state = await LoadAsync();
+            HashSet<Guid> roomScreenshotIds = state.Screenshots
+                .Where(item => string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Id)
+                .ToHashSet();
+            MessageRecord? message = state.Messages.FirstOrDefault(item =>
+                item.Id == messageId && roomScreenshotIds.Contains(item.ScreenshotId));
+            if (message == null)
+                return null;
+
+            state.Messages.Remove(message);
+            await SaveAsync(state);
+            return new MessageDeleteResult
+            {
+                Id = message.Id,
+                ScreenshotId = message.ScreenshotId
+            };
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async Task<IReadOnlyList<MessageView>> GetMessagesAsync(string session, long after)
     {
         await _gate.WaitAsync();
@@ -401,8 +299,24 @@ sealed class ReviewStore
         if (!File.Exists(_storePath))
             return new StorageState();
 
-        string json = await File.ReadAllTextAsync(_storePath);
-        return JsonSerializer.Deserialize<StorageState>(json, _jsonOptions) ?? new StorageState();
+        try
+        {
+            return await ReadStoreFileAsync(_storePath);
+        }
+        catch (Exception exception) when (exception is JsonException || exception is IOException)
+        {
+            if (!File.Exists(_backupPath))
+                throw new InvalidDataException("The review store is unreadable and no backup is available.", exception);
+
+            try
+            {
+                return await ReadStoreFileAsync(_backupPath);
+            }
+            catch (Exception backupException) when (backupException is JsonException || backupException is IOException)
+            {
+                throw new InvalidDataException("The review store and its backup are unreadable.", backupException);
+            }
+        }
     }
 
     private async Task SaveAsync(StorageState state)
@@ -411,6 +325,28 @@ sealed class ReviewStore
         string json = JsonSerializer.Serialize(state, _jsonOptions);
         await File.WriteAllTextAsync(temporaryPath, json);
         File.Move(temporaryPath, _storePath, true);
+        File.Copy(_storePath, _backupPath, true);
+    }
+
+    private async Task<StorageState> ReadStoreFileAsync(string path)
+    {
+        string json = await File.ReadAllTextAsync(path);
+        return JsonSerializer.Deserialize<StorageState>(json, _jsonOptions) ?? new StorageState();
+    }
+
+    private bool DeleteImageFile(string fileName)
+    {
+        try
+        {
+            string path = GetImagePath(fileName);
+            if (File.Exists(path))
+                File.Delete(path);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static MessageView ToMessageView(MessageRecord message, ScreenshotRecord screenshot)
@@ -426,7 +362,7 @@ sealed class ReviewStore
     }
 }
 
-sealed class StorageState
+public sealed class StorageState
 {
     public List<RoomRecord> Rooms { get; set; } = new();
     public List<ScreenshotRecord> Screenshots { get; set; } = new();
@@ -434,13 +370,13 @@ sealed class StorageState
     public long NextMessageId { get; set; } = 1;
 }
 
-sealed class RoomRecord
+public sealed class RoomRecord
 {
     public string Key { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-sealed class ScreenshotRecord
+public sealed class ScreenshotRecord
 {
     public Guid Id { get; set; }
     public string Session { get; set; } = string.Empty;
@@ -450,7 +386,7 @@ sealed class ScreenshotRecord
     public bool Handled { get; set; }
 }
 
-sealed class MessageRecord
+public sealed class MessageRecord
 {
     public long Id { get; set; }
     public Guid ScreenshotId { get; set; }
@@ -458,7 +394,7 @@ sealed class MessageRecord
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-sealed class ScreenshotView
+public sealed class ScreenshotView
 {
     public Guid Id { get; set; }
     public int Sequence { get; set; }
@@ -467,7 +403,21 @@ sealed class ScreenshotView
     public string? MessageText { get; set; }
 }
 
-sealed class MessageView
+public sealed class ScreenshotDeleteResult
+{
+    public Guid Id { get; set; }
+    public int Sequence { get; set; }
+    public int DeletedMessageCount { get; set; }
+    public bool ImageDeleted { get; set; }
+}
+
+public sealed class MessageDeleteResult
+{
+    public long Id { get; set; }
+    public Guid ScreenshotId { get; set; }
+}
+
+public sealed class MessageView
 {
     public long Id { get; set; }
     public Guid ScreenshotId { get; set; }
@@ -476,12 +426,12 @@ sealed class MessageView
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-sealed class MessageRequest
+public sealed class MessageRequest
 {
     public string? Text { get; set; }
 }
 
-sealed class HandledRequest
+public sealed class HandledRequest
 {
     public bool Handled { get; set; }
 }
