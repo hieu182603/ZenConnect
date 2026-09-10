@@ -44,6 +44,19 @@ try {
         throw 'Dotnet build failed.'
     }
 
+    # Match the Dockerfile's server-only target even when verifying on Windows.
+    # Restore explicitly: the desktop build above restores net8.0-windows assets.
+    $serverProject = Join-Path $root 'src\ZenConnect\ZenConnect.csproj'
+    $serverOutput = Join-Path $root 'artifacts\render-publish'
+    & $Dotnet restore $serverProject -p:TargetFramework=net8.0
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Server restore failed.'
+    }
+    & $Dotnet publish $serverProject --configuration Release -p:TargetFramework=net8.0 --no-restore --output $serverOutput
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Server publish failed.'
+    }
+
     $jsPath = Join-Path $root 'src\ZenConnect\wwwroot\app.js'
     if (Get-Command node -ErrorAction SilentlyContinue) {
         if (Test-Path -LiteralPath $jsPath) {

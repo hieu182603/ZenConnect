@@ -4,6 +4,8 @@ services:
     runtime: docker
     region: singapore
     plan: starter
+    # Paths are relative to the repository root (Render Root Directory must be empty).
+    # Existing manually configured services must update these fields in Settings too.
     dockerfilePath: ./src/ZenConnect/Dockerfile
     dockerContext: ./src/ZenConnect
     healthCheckPath: /api/health

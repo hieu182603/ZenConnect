@@ -69,10 +69,35 @@ URL server gần nhất được lưu tại `%LocalAppData%\ZenConnect\server-ur
 
 ## Triển khai lên Render
 
+### Dịch vụ mới qua Blueprint
+
 1. Push repository lên GitHub hoặc GitLab.
 2. Trong Render, chọn `New` → `Blueprint` và kết nối repository.
 3. Render đọc `render.yaml`, build `src/ZenConnect/Dockerfile` và gắn persistent disk tại `/var/data`.
 4. Sau khi deploy, nhập URL HTTPS của Render vào client và nhấn `KẾT NỐI`.
+
+### Sửa dịch vụ đang dùng đường dẫn cũ `ScreenReviewServer`
+
+Nếu log báo `invalid local: resolve : lstat /opt/render/project/src/ScreenReviewServer: no such file or directory`, Render đang dùng đường dẫn đã bị xóa khi hợp nhất project vào `src/ZenConnect`. Lỗi xảy ra trước bước build .NET.
+
+Mở **dịch vụ hiện tại → Settings → Build & Deploy**, cập nhật đồng bộ:
+
+| Trường | Giá trị |
+| --- | --- |
+| Branch | `main` |
+| Root Directory | Để trống (gốc repository) |
+| Dockerfile Path | `./src/ZenConnect/Dockerfile` |
+| Docker Build Context Directory | `./src/ZenConnect` |
+| Docker Command | Để trống (dùng entrypoint `dotnet ZenConnect.dll --server`) |
+| Health Check Path | `/api/health` |
+
+Lưu các thay đổi rồi chọn **Manual Deploy → Deploy latest commit**. Không nhập `/opt/render/project/src` vào các trường này: đó là đường dẫn nội bộ của Render, không phải đường dẫn trong repository. Không đặt Root Directory thành `src/ZenConnect` khi dùng các giá trị trong bảng, vì Render tính đường dẫn Dockerfile và build context tương đối với Root Directory.
+
+File `render.yaml` hiện đã dùng đường dẫn mới, nhưng việc có file này trong repository không tự cập nhật dịch vụ được tạo thủ công. Nếu dịch vụ được quản lý qua Blueprint, đồng bộ Blueprint đang quản lý chính dịch vụ đó. Không tạo Blueprint mới để sửa dịch vụ hiện tại; tên mẫu `screen-review-server` trong YAML có thể khác tên dịch vụ đang dùng.
+
+Tài liệu tham chiếu: [Root Directory và các đường dẫn tương đối trên Render](https://render.com/docs/monorepo-support), [quản lý dịch vụ bằng Blueprint](https://render.com/docs/infrastructure-as-code).
+
+Sau khi triển khai thành công, kiểm tra `/api/health` trả về `{"status":"ok"}` và trang `/` tải được giao diện. Kiểm tra kết nối, tải ảnh và phản hồi bằng client là bước riêng để xác nhận hoạt động thực tế.
 
 Mỗi client tự tạo một key ngẫu nhiên dạng `XXXX-XXXX-XXXX-XXXX-XXXX` và đăng ký phòng tương ứng. Server giữ tối đa 200 ảnh gần nhất cho mỗi phòng theo mặc định (`SCREEN_REVIEW_MAX_SCREENSHOTS_PER_ROOM`).
 
@@ -95,4 +120,4 @@ Chạy script kiểm tra toàn diện:
 .\scripts\verify.ps1
 ```
 
-Script sẽ tự động nhận diện .NET SDK, build toàn bộ solution, kiểm tra cú pháp JavaScript và xác thực cú pháp các script khởi chạy.
+Script sẽ tự động nhận diện .NET SDK, build toàn bộ solution, restore/publish riêng server `net8.0` theo Dockerfile vào `artifacts/render-publish`, kiểm tra cú pháp JavaScript và xác thực cú pháp các script khởi chạy. Kiểm tra này không thay thế việc build container Linux hoặc deploy thực tế trên Render.
