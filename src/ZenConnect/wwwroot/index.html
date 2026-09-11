@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZenConnect</title>
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <section id="entry-screen" class="entry-screen">
@@ -109,22 +109,29 @@
         <div id="message-list" class="message-list" aria-live="polite" aria-busy="false"></div>
 
         <form id="message-form" class="composer">
-          <div class="composer-mode">
-            <label for="message-mode">Kiểu gửi</label>
-            <select id="message-mode">
-              <option value="text">Phản hồi</option>
-              <option value="choice">Đáp án nhiều câu</option>
-            </select>
+          <div class="composer-top">
+            <div class="composer-mode-wrap">
+              <label for="message-mode" class="sr-only">Kiểu gửi</label>
+              <select id="message-mode" class="composer-mode-select">
+                <option value="text">Phản hồi ảnh</option>
+                <option value="choice">Đáp án nhiều câu</option>
+              </select>
+            </div>
+            <div class="composer-meta">
+              <label id="composer-title" for="message" class="sr-only">Phản hồi</label>
+              <span id="character-count" class="character-count">0 / 2000</span>
+            </div>
           </div>
-          <div class="composer-label">
-            <label id="composer-title" for="message">Phản hồi ảnh</label>
-            <span id="character-count">0 / 2000</span>
-          </div>
-          <textarea id="message" maxlength="2000" rows="3" placeholder="Nhập phản hồi của bạn..." required disabled></textarea>
+
+          <textarea id="message" maxlength="2000" rows="3" placeholder="Nhập phản hồi..." required disabled></textarea>
+
           <div class="composer-footer">
             <span id="message-status" role="status" aria-live="polite"></span>
             <button id="send-button" type="submit" aria-label="Gửi tin nhắn" title="Gửi tin nhắn" disabled>
-              <span aria-hidden="true">&#8594;</span>
+              <span>Gửi</span>
+              <svg class="send-arrow" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+              </svg>
             </button>
           </div>
         </form>
@@ -182,6 +189,6 @@
 
   </section>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>

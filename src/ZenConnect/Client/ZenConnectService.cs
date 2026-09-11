@@ -836,16 +836,13 @@ public sealed class ZenConnectService : Form
         int count = _messages.Items.Count;
         if (count == 0)
         {
-            _messageOverlay.SetMessage("Tin nhan", "Chua co tin nhan.", "0 / 0");
+            _messageOverlay.SetMessage("Chưa có tin");
         }
         else
         {
             _overlayMessageIndex = Math.Max(0, Math.Min(_overlayMessageIndex, count - 1));
             var message = (MessageResponse)_messages.Items[_overlayMessageIndex];
-            _messageOverlay.SetMessage(
-                message.Sequence.HasValue ? "Ảnh " + message.Sequence.Value : "Đáp án",
-                message.Text,
-                (_overlayMessageIndex + 1) + " / " + count);
+            _messageOverlay.SetMessage(message.Text);
         }
 
         _messageOverlay.ShowNear(Cursor.Position);
@@ -983,9 +980,7 @@ public sealed class ZenConnectService : Form
 
 internal sealed class MessageOverlayForm : Form
 {
-    private readonly Label _titleLabel;
     private readonly Label _textLabel;
-    private readonly Label _countLabel;
 
     public MessageOverlayForm()
     {
@@ -993,8 +988,8 @@ internal sealed class MessageOverlayForm : Form
         TopMost = true;
         ShowInTaskbar = false;
         BackColor = Color.FromArgb(224, 229, 232);
-        Opacity = 0.68;
-        Size = new Size(300, 32);
+        Opacity = 0.72;
+        Size = new Size(150, 28);
         DoubleBuffered = true;
 
         Controls.Add(new Panel
@@ -1004,39 +999,17 @@ internal sealed class MessageOverlayForm : Form
             Width = 2
         });
 
-        _titleLabel = new Label
-        {
-            ForeColor = Color.FromArgb(82, 96, 105),
-            Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
-            Location = new Point(10, 0),
-            Size = new Size(52, 32),
-            TextAlign = ContentAlignment.MiddleLeft,
-            AutoEllipsis = true
-        };
-
-        _countLabel = new Label
-        {
-            ForeColor = Color.FromArgb(18, 132, 160),
-            Font = new Font("Consolas", 7.5f, FontStyle.Bold),
-            Location = new Point(258, 0),
-            Size = new Size(34, 32),
-            TextAlign = ContentAlignment.MiddleRight,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right
-        };
-
         _textLabel = new Label
         {
             ForeColor = Color.FromArgb(28, 36, 42),
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            Location = new Point(68, 0),
-            Size = new Size(182, 32),
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            Location = new Point(8, 0),
+            Size = new Size(138, 28),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
             UseMnemonic = false
         };
 
-        Controls.Add(_titleLabel);
-        Controls.Add(_countLabel);
         Controls.Add(_textLabel);
     }
 
@@ -1051,18 +1024,27 @@ internal sealed class MessageOverlayForm : Form
 
     public void SetMessage(string title, string text, string count)
     {
+        SetMessage(text);
+    }
+
+    public void SetMessage(string text)
+    {
         if (InvokeRequired)
         {
-            Invoke(new Action(() => SetMessage(title, text, count)));
+            Invoke(new Action(() => SetMessage(text)));
             return;
         }
 
-        _titleLabel.Text = title;
-        _textLabel.Text = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
-        _countLabel.Text = count;
-        _countLabel.Width = Math.Max(42, _countLabel.PreferredWidth);
-        _countLabel.Left = Width - _countLabel.Width - 8;
-        _textLabel.Width = Math.Max(70, _countLabel.Left - _textLabel.Left - 7);
+        string cleanText = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (string.IsNullOrEmpty(cleanText))
+        {
+            cleanText = "...";
+        }
+
+        Width = 150;
+        _textLabel.Width = 138;
+        _textLabel.Text = cleanText;
+        Invalidate();
     }
 
     public void ShowNear(Point location)

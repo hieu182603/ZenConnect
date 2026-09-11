@@ -16,6 +16,9 @@ const state = {
   generation: 0,
 };
 
+const STORAGE_KEY = "zenconnect_room_key";
+const SESSION_SELECTED_KEY = "zenconnect_selected_id";
+
 const elements = {
   entryScreen: document.querySelector("#entry-screen"),
   roomScreen: document.querySelector("#room-screen"),
@@ -88,6 +91,18 @@ elements.messageMode.addEventListener("change", () => {
   elements.messageStatus.textContent = "";
   renderComposer();
 });
+
+elements.message.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      elements.messageForm.requestSubmit();
+    } else if (!event.shiftKey && elements.messageMode.value === "text") {
+      event.preventDefault();
+      elements.messageForm.requestSubmit();
+    }
+  }
+});
 elements.accessKey.addEventListener("input", formatAccessKey);
 elements.previousButton.addEventListener("click", () => selectOffset(-1));
 elements.nextButton.addEventListener("click", () => selectOffset(1));
@@ -152,6 +167,9 @@ async function joinRoom() {
     if (generation !== state.generation) return;
     enterRoom(state.roomCode);
   } catch (error) {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {}
     state.roomCode = null;
     setRoomLoading(false);
     setEntryStatus(error.message, true);
@@ -176,7 +194,15 @@ async function fetchWorkspaceData(generation = state.generation) {
   if (generation !== state.generation || session !== state.roomCode) return;
 
   if (!screenshots.some((item) => item.id === state.selectedId)) {
-    state.selectedId = screenshots.at(-1)?.id ?? null;
+    let restoredId = null;
+    try {
+      restoredId = sessionStorage.getItem(SESSION_SELECTED_KEY);
+    } catch {}
+    if (restoredId && screenshots.some((item) => item.id === restoredId)) {
+      state.selectedId = restoredId;
+    } else {
+      state.selectedId = screenshots.at(-1)?.id ?? null;
+    }
   }
 
   renderAll();
@@ -185,6 +211,9 @@ async function fetchWorkspaceData(generation = state.generation) {
 
 function enterRoom(session) {
   state.roomJoined = true;
+  try {
+    localStorage.setItem(STORAGE_KEY, elements.accessKey.value.trim().toUpperCase());
+  } catch {}
   const lastGroup = session.toUpperCase().split("-").at(-1);
   elements.roomSession.textContent = `PHÒNG ••••-${lastGroup}`;
   elements.entryScreen.hidden = true;
@@ -197,6 +226,10 @@ function enterRoom(session) {
 
 function leaveRoom() {
   if (hasPendingOperation()) return;
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(SESSION_SELECTED_KEY);
+  } catch {}
   state.roomJoined = false;
   state.generation += 1;
   window.clearInterval(state.refreshTimer);
@@ -531,6 +564,9 @@ function selectScreenshot(id) {
   if (hasPendingOperation()) return;
   if (!state.screenshots.some((item) => item.id === id)) return;
   state.selectedId = id;
+  try {
+    sessionStorage.setItem(SESSION_SELECTED_KEY, id);
+  } catch {}
   elements.messageStatus.textContent = "";
   renderAll();
 }
@@ -656,11 +692,15 @@ function renderComposer() {
   elements.message.disabled = disabled;
   elements.message.required = false;
   elements.sendButton.disabled = disabled;
+
   elements.messageForm.setAttribute("aria-busy", String(state.sendingMessage));
-  elements.composerTitle.textContent = choice ? "Danh sách đáp án"
-    : current ? `Phản hồi ảnh ${padNumber(current.sequence)}` : "Phản hồi ảnh";
-  elements.message.placeholder = choice ? "1 A | 2 B | 3 C | 4 D"
-    : !current ? "Dán danh sách đáp án hoặc chờ ảnh để phản hồi..." : "Nhập phản hồi hoặc dán: 1 A | 2 B | 3 C";
+  if (elements.composerTitle) {
+    elements.composerTitle.textContent = choice ? "Danh sách đáp án"
+      : current ? `Phản hồi ảnh ${padNumber(current.sequence)}` : "Phản hồi ảnh";
+  }
+  elements.message.placeholder = choice
+    ? "Ví dụ: 1 A | 2 B | 3 C | 4 D"
+    : !current ? "Dán đáp án hoặc chờ ảnh để phản hồi..." : "Nhập phản hồi...";
   updateCharacterCount();
 }
 
@@ -779,3 +819,23 @@ window.addEventListener("beforeunload", () => {
 
 updateCharacterCount();
 elements.accessKey.focus({ preventScroll: true });
+
+function autoRestoreSession() {
+  let savedKey = null;
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    savedKey = urlParams.get("key") || localStorage.getItem(STORAGE_KEY);
+  } catch {}
+
+  if (savedKey && /^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){4}$/i.test(savedKey.trim())) {
+    elements.accessKey.value = savedKey.trim().toUpperCase();
+    setEntryStatus("Đang khôi phục phiên phòng...", false);
+    joinRoom().catch(() => {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {}
+    });
+  }
+}
+
+autoRestoreSession();
