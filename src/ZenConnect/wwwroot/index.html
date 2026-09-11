@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ZenConnect</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <section id="entry-screen" class="entry-screen">
@@ -46,13 +46,13 @@
         </div>
 
         <form id="connection-form" class="entry-form">
-          <label>
-            <span>Key phòng</span>
-            <span class="password-field">
-              <input id="access-key" type="password" inputmode="text" autocomplete="off" spellcheck="false" maxlength="24" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" required>
-              <button id="toggle-key" type="button" aria-label="Hiện key phòng" title="Hiện key phòng">Hiện</button>
-            </span>
-          </label>
+          <div class="key-control">
+            <label for="access-key">Key phòng</label>
+            <div class="password-field">
+              <input id="access-key" type="password" inputmode="text" autocomplete="off" spellcheck="false" maxlength="24" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" aria-describedby="entry-status" required>
+              <button id="toggle-key" type="button" aria-controls="access-key" aria-pressed="false" aria-label="Hiện key phòng" title="Hiện key phòng">Hiện</button>
+            </div>
+          </div>
 
           <p id="entry-status" class="entry-status" aria-live="polite">Key được tạo tự động khi ZenConnect chạy lần đầu.</p>
           <button id="connect-button" class="enter-button" type="submit">
@@ -109,6 +109,13 @@
         <div id="message-list" class="message-list" aria-live="polite" aria-busy="false"></div>
 
         <form id="message-form" class="composer">
+          <div class="composer-mode">
+            <label for="message-mode">Kiểu gửi</label>
+            <select id="message-mode">
+              <option value="text">Phản hồi</option>
+              <option value="choice">Đáp án nhiều câu</option>
+            </select>
+          </div>
           <div class="composer-label">
             <label id="composer-title" for="message">Phản hồi ảnh</label>
             <span id="character-count">0 / 2000</span>
@@ -130,6 +137,11 @@
             <time id="created-at"></time>
           </div>
           <div class="viewer-actions">
+            <div class="collection-actions">
+              <button id="export-button" type="button" title="Tải tất cả ảnh trong phòng thành một thư mục trong file ZIP" disabled>Xuất đề · ZIP</button>
+              <button id="delete-all-button" class="danger-action" type="button" disabled>Xóa toàn bộ ảnh</button>
+            </div>
+            <div class="selection-actions">
             <label class="handled-control">
               <input id="handled" type="checkbox" disabled>
               <span>Đã xử lý</span>
@@ -140,6 +152,7 @@
               </svg>
               <span id="delete-label">Xóa ảnh</span>
             </button>
+            </div>
           </div>
         </div>
 
@@ -159,8 +172,7 @@
 
         <div class="filmstrip-panel">
           <div class="filmstrip-heading">
-            <span>Ảnh trong phiên</span>
-            <strong id="image-count">0 / 0</strong>
+            <div class="filmstrip-summary"><span>Ảnh trong phòng</span><strong id="image-count">0 / 0</strong></div>
           </div>
           <div id="thumbnail-list" class="thumbnail-list"></div>
         </div>
@@ -170,6 +182,6 @@
 
   </section>
 
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

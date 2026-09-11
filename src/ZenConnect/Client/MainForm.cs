@@ -1,7 +1,6 @@
 using System;
-using System.Diagnostics;
 using System.Drawing;
-using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -9,6 +8,11 @@ namespace ZenConnect.Client;
 
 public sealed class MainForm : Form
 {
+    private const string ProductionServerUrl = "https://zenconnect-noli.onrender.com";
+    private const int ExitHotKeyId = 0x5A58;
+    private const int WmHotKey = 0x0312;
+    private const uint ModShift = 0x0004;
+    private const uint ModNoRepeat = 0x4000;
     private static readonly Color Background = Color.FromArgb(13, 18, 22);
     private static readonly Color Surface = Color.FromArgb(21, 28, 33);
     private static readonly Color SurfaceRaised = Color.FromArgb(27, 36, 42);
@@ -20,22 +24,23 @@ public sealed class MainForm : Form
     private static readonly Color ErrorColor = Color.FromArgb(236, 112, 99);
 
     private readonly ZenConnectService _service = new();
-    private readonly TextBox _serverUrl;
+    private readonly string _serverUrl;
     private readonly TextBox _roomKey;
     private readonly Label _status;
     private readonly Label _connectionBadge;
     private readonly Button _primaryButton;
-    private readonly Button _regionButton;
-    private readonly Button _openWebButton;
-    private readonly Button _serverActionButton;
+    private readonly NotifyIcon _trayIcon;
     private bool _connected;
+    private bool _allowExit;
+    private bool _exitHotKeyRegistered;
+    private bool _backgroundNoticeShown;
 
     public MainForm()
     {
         Text = "ZenConnect";
-        ClientSize = new Size(590, 550);
-        MinimumSize = new Size(606, 589);
-        MaximumSize = new Size(606, 589);
+        ClientSize = new Size(590, 405);
+        MinimumSize = new Size(606, 444);
+        MaximumSize = new Size(606, 444);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Background;
         ForeColor = TextColor;
@@ -43,6 +48,17 @@ public sealed class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
+
+        _trayIcon = new NotifyIcon
+        {
+            Icon = SystemIcons.Application,
+            Text = "ZenConnect đang chạy nền",
+            Visible = true,
+            BalloonTipTitle = "ZenConnect vẫn đang chạy",
+            BalloonTipText = "Nhấp đúp biểu tượng để mở lại. Nhấn Shift + Tab để thoát hẳn.",
+            BalloonTipIcon = ToolTipIcon.Info
+        };
+        _trayIcon.DoubleClick += delegate { RestoreWindow(); };
 
         Controls.Add(new Panel
         {
@@ -78,39 +94,13 @@ public sealed class MainForm : Form
         };
         Controls.Add(_connectionBadge);
 
-        Controls.Add(MakeCaption("SERVER URL", 30, 96));
-        _serverUrl = new TextBox
-        {
-            Text = LoadServerUrl(),
-            BackColor = SurfaceRaised,
-            ForeColor = TextColor,
-            BorderStyle = BorderStyle.FixedSingle,
-            Location = new Point(30, 120),
-            Size = new Size(394, 31),
-            Font = new Font("Segoe UI", 10.5f)
-        };
-        Controls.Add(_serverUrl);
-
-        _serverActionButton = MakeButton("DÙNG LOCAL", 438, 119, 122, 33, SurfaceRaised, TextColor);
-        _serverActionButton.Click += delegate
-        {
-            if (_connected)
-            {
-                DisconnectForServerChange();
-            }
-            else
-            {
-                _serverUrl.Text = "http://localhost:5080";
-                SetStatus("Đã chọn server local. Nhấn Kết nối để tiếp tục.", StatusKind.Info);
-            }
-        };
-        Controls.Add(_serverActionButton);
+        _serverUrl = LoadServerUrl();
 
         var roomPanel = new Panel
         {
             BackColor = Surface,
             BorderStyle = BorderStyle.FixedSingle,
-            Location = new Point(30, 178),
+            Location = new Point(30, 96),
             Size = new Size(530, 112)
         };
         roomPanel.Controls.Add(MakeCaption("ROOM KEY CỦA MÁY", 18, 15));
@@ -139,7 +129,7 @@ public sealed class MainForm : Form
         roomPanel.Controls.Add(copyButton);
         Controls.Add(roomPanel);
 
-        _primaryButton = MakeButton("KẾT NỐI", 30, 316, 530, 52, AccentColor, Background);
+        _primaryButton = MakeButton("KẾT NỐI", 30, 228, 530, 52, AccentColor, Background);
         _primaryButton.Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold);
         _primaryButton.Click += async delegate
         {
@@ -150,21 +140,11 @@ public sealed class MainForm : Form
         };
         Controls.Add(_primaryButton);
 
-        _regionButton = MakeButton("CHỤP VÙNG", 30, 380, 255, 42, SurfaceRaised, TextColor);
-        _regionButton.Enabled = false;
-        _regionButton.Click += async delegate { await CaptureRegionAsync(); };
-        Controls.Add(_regionButton);
-
-        _openWebButton = MakeButton("MỞ PHÒNG WEB", 305, 380, 255, 42, SurfaceRaised, TextColor);
-        _openWebButton.Enabled = false;
-        _openWebButton.Click += delegate { OpenDashboard(); };
-        Controls.Add(_openWebButton);
-
         var statusPanel = new Panel
         {
             BackColor = Surface,
             BorderStyle = BorderStyle.FixedSingle,
-            Location = new Point(30, 448),
+            Location = new Point(30, 300),
             Size = new Size(530, 52)
         };
         statusPanel.Controls.Add(new Panel { BackColor = AccentColor, Dock = DockStyle.Left, Width = 4 });
@@ -182,29 +162,83 @@ public sealed class MainForm : Form
 
         Controls.Add(new Label
         {
-            Text = "X: chụp nhanh    Chuột phải: hiện/ẩn    Lăn chuột: chuyển phản hồi",
+            Text = "X: chụp nhanh    Chuột phải: hiện/ẩn    Lăn chuột: chuyển phản hồi    Shift+Tab: thoát",
             ForeColor = MutedColor,
             AutoSize = true,
-            Location = new Point(31, 516),
+            Location = new Point(31, 370),
             Font = new Font("Segoe UI", 8.5f)
         });
 
-        FormClosing += delegate
+        FormClosing += HandleFormClosing;
+        FormClosed += delegate
         {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
             _service.Disconnect();
             _service.Dispose();
         };
         Shown += async delegate { await ConnectAsync(); };
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _exitHotKeyRegistered = RegisterHotKey(
+            Handle, ExitHotKeyId, ModShift | ModNoRepeat, (uint)Keys.Tab);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        if (_exitHotKeyRegistered)
+        {
+            UnregisterHotKey(Handle, ExitHotKeyId);
+            _exitHotKeyRegistered = false;
+        }
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WmHotKey && message.WParam.ToInt32() == ExitHotKeyId)
+        {
+            _allowExit = true;
+            Close();
+            return;
+        }
+        base.WndProc(ref message);
+    }
+
+    private void HandleFormClosing(object? sender, FormClosingEventArgs e)
+    {
+        if (_allowExit || e.CloseReason == CloseReason.WindowsShutDown)
+            return;
+
+        e.Cancel = true;
+        Hide();
+        ShowInTaskbar = false;
+        if (!_backgroundNoticeShown)
+        {
+            _backgroundNoticeShown = true;
+            _trayIcon.ShowBalloonTip(3500);
+        }
+    }
+
+    private void RestoreWindow()
+    {
+        ShowInTaskbar = true;
+        Show();
+        if (WindowState == FormWindowState.Minimized)
+            WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
     private async Task ConnectAsync()
     {
-        string server = _serverUrl.Text.Trim().TrimEnd('/');
+        string server = _serverUrl.Trim().TrimEnd('/');
         if (!Uri.TryCreate(server, UriKind.Absolute, out Uri? uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             SetStatus("Server URL phải bắt đầu bằng http:// hoặc https://.", StatusKind.Error);
-            _serverUrl.Focus();
             return;
         }
 
@@ -214,15 +248,10 @@ public sealed class MainForm : Form
         {
             _service.ServerUrl = server;
             await _service.ConnectAsync();
-            SaveServerUrl(server);
             _connected = true;
-            _serverUrl.Enabled = false;
-            _serverActionButton.Text = "ĐỔI SERVER";
-            _regionButton.Enabled = true;
-            _openWebButton.Enabled = true;
             _connectionBadge.Text = "ĐÃ KẾT NỐI";
             _connectionBadge.ForeColor = AccentColor;
-            SetStatus("Đã kết nối. Nhấn X để chụp nhanh hoặc chọn vùng trên tool.", StatusKind.Success);
+            SetStatus("Đã kết nối. Nhấn X để chụp nhanh; X vẫn gõ được trong ô nhập.", StatusKind.Success);
         }
         catch (Exception ex)
         {
@@ -250,21 +279,6 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task CaptureRegionAsync()
-    {
-        SetWorking(true, "ĐANG CHỌN VÙNG...");
-        SetStatus("Kéo chuột để chọn vùng. Nhấn Esc để hủy.", StatusKind.Info);
-        try
-        {
-            await _service.CaptureRegionAsync();
-            ShowCaptureResult();
-        }
-        finally
-        {
-            SetWorking(false, null);
-        }
-    }
-
     private void ShowCaptureResult()
     {
         string result = _service.CaptureStatus;
@@ -273,27 +287,9 @@ public sealed class MainForm : Form
         SetStatus(result, failed ? StatusKind.Error : StatusKind.Success);
     }
 
-    private void DisconnectForServerChange()
-    {
-        _service.Disconnect();
-        _connected = false;
-        _serverUrl.Enabled = true;
-        _serverActionButton.Text = "DÙNG LOCAL";
-        _regionButton.Enabled = false;
-        _openWebButton.Enabled = false;
-        _connectionBadge.Text = "CHƯA KẾT NỐI";
-        _connectionBadge.ForeColor = MutedColor;
-        _primaryButton.Text = "KẾT NỐI";
-        SetStatus("Đã ngắt kết nối. Bạn có thể đổi server URL.", StatusKind.Info);
-        _serverUrl.Focus();
-    }
-
     private void SetWorking(bool working, string? buttonText)
     {
         _primaryButton.Enabled = !working;
-        _regionButton.Enabled = !working && _connected;
-        _serverActionButton.Enabled = !working;
-        _openWebButton.Enabled = !working && _connected;
         _primaryButton.Text = working
             ? buttonText ?? "ĐANG XỬ LÝ..."
             : _connected ? "CHỤP TOÀN MÀN HÌNH" : "KẾT NỐI";
@@ -303,29 +299,12 @@ public sealed class MainForm : Form
     {
         try
         {
-            Clipboard.SetText(_service.DeviceKey);
+            Clipboard.SetDataObject(_service.DeviceKey, true, 10, 50);
             SetStatus("Đã sao chép room key vào clipboard.", StatusKind.Success);
         }
         catch (Exception ex)
         {
             SetStatus("Không thể sao chép key: " + ex.Message, StatusKind.Error);
-        }
-    }
-
-    private void OpenDashboard()
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = _serverUrl.Text.Trim().TrimEnd('/')
-                    + "/?v=" + DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                UseShellExecute = true
-            });
-        }
-        catch (Exception ex)
-        {
-            SetStatus("Không thể mở trình duyệt: " + ex.Message, StatusKind.Error);
         }
     }
 
@@ -352,25 +331,7 @@ public sealed class MainForm : Form
         if (!string.IsNullOrWhiteSpace(configured))
             return configured.Trim();
 
-        string path = Path.Combine(GetSettingsDirectory(), "server-url.txt");
-        return File.Exists(path) ? File.ReadAllText(path).Trim() : "http://localhost:5080";
-    }
-
-    private static string GetSettingsDirectory()
-    {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ZenConnect");
-    }
-
-    private static void SaveServerUrl(string serverUrl)
-    {
-        string directory = GetSettingsDirectory();
-        Directory.CreateDirectory(directory);
-        string path = Path.Combine(directory, "server-url.txt");
-        string temporaryPath = path + ".tmp";
-        File.WriteAllText(temporaryPath, serverUrl);
-        File.Move(temporaryPath, path, true);
+        return ProductionServerUrl;
     }
 
     private static Label MakeCaption(string text, int x, int y)
@@ -414,4 +375,10 @@ public sealed class MainForm : Form
         Success,
         Error
     }
+
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 }

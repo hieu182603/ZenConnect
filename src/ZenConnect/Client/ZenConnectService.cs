@@ -13,6 +13,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using System.Windows.Automation;
 
 namespace ZenConnect.Client;
 
@@ -35,7 +36,7 @@ public sealed class ZenConnectService : Form
     private static readonly Color MutedColor = Color.FromArgb(105, 115, 124);
     private static readonly Color AccentColor = Color.FromArgb(25, 118, 150);
 
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -57,12 +58,14 @@ public sealed class ZenConnectService : Form
     private Button _captureRegionButton = null!;
     private Button _refreshButton = null!;
     private System.Windows.Forms.Timer _pollTimer;
+    private System.Windows.Forms.Timer _textEntryFocusTimer;
     private long _lastMessageId;
     private bool _busy;
     private bool _polling;
     private bool _backgroundMode;
     private bool _connected;
     private bool _hotKeysRegistered;
+    private bool _captureHotKeyRegistered;
     private bool _resourcesDisposed;
     private int _overlayMessageIndex = -1;
     private int _wheelDeltaRemainder;
@@ -83,6 +86,8 @@ public sealed class ZenConnectService : Form
 
         _pollTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _pollTimer.Tick += async delegate { await PollAsync(); };
+        _textEntryFocusTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _textEntryFocusTimer.Tick += delegate { RefreshCaptureHotKeyForFocusedControl(); };
     }
 
     public string DeviceKey => _deviceKey;
@@ -164,6 +169,7 @@ public sealed class ZenConnectService : Form
             _resourcesDisposed = true;
             _pollTimer?.Stop();
             StopInputHooks();
+            _textEntryFocusTimer?.Dispose();
             _messageOverlay?.Dispose();
             _http.Dispose();
             _registrationGate.Dispose();
@@ -646,7 +652,7 @@ public sealed class ZenConnectService : Form
             UnregisterHotKey(Handle, CaptureHotKeyId);
             UnregisterHotKey(Handle, PreviousMessageHotKeyId);
             UnregisterHotKey(Handle, NextMessageHotKeyId);
-            throw new InvalidOperationException("Khong the dang ky phim tat. Hay dong ung dung dang su dung X hoac Ctrl + Shift + Up/Down.");
+            throw new InvalidOperationException("Khong the dang ky phim tat X hoac Ctrl + Shift + Up/Down.");
         }
 
         _mouseHook = SetWindowsHookEx(WhMouseLowLevel, _mouseHookCallback, GetModuleHandle(null), 0);
@@ -658,15 +664,97 @@ public sealed class ZenConnectService : Form
             throw new InvalidOperationException("Khong the theo doi chuot phai tren may nay.");
         }
 
+        _captureHotKeyRegistered = true;
         _hotKeysRegistered = true;
+        _textEntryFocusTimer.Start();
+        RefreshCaptureHotKeyForFocusedControl();
+    }
+
+    private void RefreshCaptureHotKeyForFocusedControl()
+    {
+        if (!_hotKeysRegistered || !IsHandleCreated)
+            return;
+
+        bool textEntryFocused = IsEditableTextControlFocused();
+        if (textEntryFocused && _captureHotKeyRegistered)
+        {
+            UnregisterHotKey(Handle, CaptureHotKeyId);
+            _captureHotKeyRegistered = false;
+        }
+        else if (!textEntryFocused && !_captureHotKeyRegistered)
+        {
+            _captureHotKeyRegistered = RegisterHotKey(
+                Handle, CaptureHotKeyId, ModNoRepeat, (uint)Keys.X);
+        }
+    }
+
+    private static bool IsEditableTextControlFocused()
+    {
+        if (IsWin32TextControlFocused())
+            return true;
+
+        try
+        {
+            AutomationElement? focused = AutomationElement.FocusedElement;
+            if (focused == null)
+                return false;
+
+            ControlType type = focused.Current.ControlType;
+            if (type != ControlType.Edit && type != ControlType.ComboBox)
+                return false;
+
+            if (focused.TryGetCurrentPattern(ValuePattern.Pattern, out object? pattern)
+                && pattern is ValuePattern valuePattern)
+                return !valuePattern.Current.IsReadOnly;
+
+            // Some browser and custom controls expose the edit control type but
+            // not ValuePattern. Treat those as editable so X remains available.
+            return focused.Current.IsKeyboardFocusable;
+        }
+        catch (ElementNotAvailableException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (COMException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsWin32TextControlFocused()
+    {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+            return false;
+
+        uint threadId = GetWindowThreadProcessId(foreground, out _);
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        if (threadId == 0 || !GetGUIThreadInfo(threadId, ref info) || info.Focus == IntPtr.Zero)
+            return false;
+
+        var className = new StringBuilder(128);
+        if (GetClassName(info.Focus, className, className.Capacity) == 0)
+            return false;
+
+        string value = className.ToString();
+        return value.Equals("Edit", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("WindowsForms10.EDIT", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("Scintilla", StringComparison.OrdinalIgnoreCase);
     }
 
     private void StopInputHooks()
     {
         _connected = false;
+        _textEntryFocusTimer.Stop();
         if (_hotKeysRegistered && IsHandleCreated)
         {
-            UnregisterHotKey(Handle, CaptureHotKeyId);
+            if (_captureHotKeyRegistered)
+                UnregisterHotKey(Handle, CaptureHotKeyId);
             UnregisterHotKey(Handle, PreviousMessageHotKeyId);
             UnregisterHotKey(Handle, NextMessageHotKeyId);
         }
@@ -678,6 +766,7 @@ public sealed class ZenConnectService : Form
         }
 
         _hotKeysRegistered = false;
+        _captureHotKeyRegistered = false;
     }
 
     private IntPtr HandleMouseHook(int code, IntPtr message, IntPtr data)
@@ -754,7 +843,7 @@ public sealed class ZenConnectService : Form
             _overlayMessageIndex = Math.Max(0, Math.Min(_overlayMessageIndex, count - 1));
             var message = (MessageResponse)_messages.Items[_overlayMessageIndex];
             _messageOverlay.SetMessage(
-                "Ảnh " + message.Sequence,
+                message.Sequence.HasValue ? "Ảnh " + message.Sequence.Value : "Đáp án",
                 message.Text,
                 (_overlayMessageIndex + 1) + " / " + count);
         }
@@ -809,6 +898,19 @@ public sealed class ZenConnectService : Form
     private static extern bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int GetClassName(IntPtr windowHandle, StringBuilder className, int maximumCount);
+
+    [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr windowHandle, int id);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -825,6 +927,29 @@ public sealed class ZenConnectService : Form
     private static extern IntPtr GetModuleHandle(string? moduleName);
 
     private delegate IntPtr MouseHookCallback(int code, IntPtr message, IntPtr data);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        public int Size;
+        public uint Flags;
+        public IntPtr Active;
+        public IntPtr Focus;
+        public IntPtr Capture;
+        public IntPtr MenuOwner;
+        public IntPtr MoveSize;
+        public IntPtr Caret;
+        public NativeRect CaretRectangle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MouseLowLevelHookData
@@ -844,13 +969,14 @@ public sealed class ZenConnectService : Form
     private sealed class MessageResponse
     {
         public long Id { get; set; }
-        public int Sequence { get; set; }
+        public int? Sequence { get; set; }
         public string Text { get; set; } = string.Empty;
         public DateTimeOffset CreatedAt { get; set; }
 
         public override string ToString()
         {
-            return "Anh " + Sequence + "  |  " + CreatedAt.ToLocalTime().ToString("HH:mm:ss");
+            string scope = Sequence.HasValue ? "Anh " + Sequence.Value : "Đáp án chung";
+            return scope + "  |  " + CreatedAt.ToLocalTime().ToString("HH:mm:ss");
         }
     }
 }
@@ -866,24 +992,24 @@ internal sealed class MessageOverlayForm : Form
         FormBorderStyle = FormBorderStyle.None;
         TopMost = true;
         ShowInTaskbar = false;
-        BackColor = Color.FromArgb(246, 248, 249);
-        Opacity = 0.88;
-        Size = new Size(360, 44);
+        BackColor = Color.FromArgb(224, 229, 232);
+        Opacity = 0.68;
+        Size = new Size(300, 32);
         DoubleBuffered = true;
 
         Controls.Add(new Panel
         {
             BackColor = Color.FromArgb(43, 169, 199),
             Dock = DockStyle.Left,
-            Width = 3
+            Width = 2
         });
 
         _titleLabel = new Label
         {
             ForeColor = Color.FromArgb(82, 96, 105),
-            Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold),
-            Location = new Point(15, 0),
-            Size = new Size(62, 44),
+            Font = new Font("Segoe UI Semibold", 7.5f, FontStyle.Bold),
+            Location = new Point(10, 0),
+            Size = new Size(52, 32),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true
         };
@@ -891,9 +1017,9 @@ internal sealed class MessageOverlayForm : Form
         _countLabel = new Label
         {
             ForeColor = Color.FromArgb(18, 132, 160),
-            Font = new Font("Consolas", 8.5f, FontStyle.Bold),
-            Location = new Point(306, 0),
-            Size = new Size(42, 44),
+            Font = new Font("Consolas", 7.5f, FontStyle.Bold),
+            Location = new Point(258, 0),
+            Size = new Size(34, 32),
             TextAlign = ContentAlignment.MiddleRight,
             Anchor = AnchorStyles.Top | AnchorStyles.Right
         };
@@ -901,9 +1027,9 @@ internal sealed class MessageOverlayForm : Form
         _textLabel = new Label
         {
             ForeColor = Color.FromArgb(28, 36, 42),
-            Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
-            Location = new Point(84, 0),
-            Size = new Size(212, 44),
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            Location = new Point(68, 0),
+            Size = new Size(182, 32),
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
             UseMnemonic = false
@@ -919,7 +1045,7 @@ internal sealed class MessageOverlayForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(Color.FromArgb(175, 187, 193));
+        using var pen = new Pen(Color.FromArgb(135, 151, 159));
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 
@@ -935,8 +1061,8 @@ internal sealed class MessageOverlayForm : Form
         _textLabel.Text = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
         _countLabel.Text = count;
         _countLabel.Width = Math.Max(42, _countLabel.PreferredWidth);
-        _countLabel.Left = Width - _countLabel.Width - 12;
-        _textLabel.Width = Math.Max(80, _countLabel.Left - _textLabel.Left - 10);
+        _countLabel.Left = Width - _countLabel.Width - 8;
+        _textLabel.Width = Math.Max(70, _countLabel.Left - _textLabel.Left - 7);
     }
 
     public void ShowNear(Point location)

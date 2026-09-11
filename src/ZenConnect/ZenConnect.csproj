@@ -25,4 +25,8 @@
     <EmbeddedResource Remove="Client\**" />
     <None Remove="Client\**" />
   </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
 </Project>

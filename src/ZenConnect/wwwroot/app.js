@@ -8,6 +8,10 @@ const state = {
   roomCode: null,
   refreshing: false,
   deletingScreenshot: false,
+  deletingAll: false,
+  exporting: false,
+  sendingMessage: false,
+  updatingHandled: false,
   deletingMessageIds: new Set(),
   generation: 0,
 };
@@ -31,6 +35,7 @@ const elements = {
   chatEmpty: document.querySelector("#chat-empty"),
   messageList: document.querySelector("#message-list"),
   messageForm: document.querySelector("#message-form"),
+  messageMode: document.querySelector("#message-mode"),
   composerTitle: document.querySelector("#composer-title"),
   characterCount: document.querySelector("#character-count"),
   message: document.querySelector("#message"),
@@ -41,6 +46,8 @@ const elements = {
   handled: document.querySelector("#handled"),
   deleteButton: document.querySelector("#delete-button"),
   deleteLabel: document.querySelector("#delete-label"),
+  deleteAllButton: document.querySelector("#delete-all-button"),
+  exportButton: document.querySelector("#export-button"),
   imageStage: document.querySelector("#image-stage"),
   reviewEmpty: document.querySelector("#review-empty"),
   selectedImage: document.querySelector("#selected-image"),
@@ -56,11 +63,17 @@ elements.connectionForm.addEventListener("submit", async (event) => {
 });
 
 elements.toggleKey.addEventListener("click", () => {
-  const showing = elements.accessKey.type === "text";
-  elements.accessKey.type = showing ? "password" : "text";
-  elements.toggleKey.textContent = showing ? "Hiện" : "Ẩn";
-  elements.toggleKey.setAttribute("aria-label", showing ? "Hiện access key" : "Ẩn access key");
+  setKeyVisibility(elements.accessKey.type !== "text");
 });
+
+function setKeyVisibility(showing) {
+  elements.accessKey.type = showing ? "text" : "password";
+  elements.toggleKey.textContent = showing ? "Ẩn" : "Hiện";
+  elements.toggleKey.setAttribute("aria-pressed", String(showing));
+  const label = showing ? "Ẩn key phòng" : "Hiện key phòng";
+  elements.toggleKey.setAttribute("aria-label", label);
+  elements.toggleKey.title = label;
+}
 
 elements.leaveButton.addEventListener("click", leaveRoom);
 elements.refreshButton.addEventListener("click", refreshRoom);
@@ -71,35 +84,47 @@ elements.messageForm.addEventListener("submit", async (event) => {
 });
 
 elements.message.addEventListener("input", updateCharacterCount);
+elements.messageMode.addEventListener("change", () => {
+  elements.messageStatus.textContent = "";
+  renderComposer();
+});
 elements.accessKey.addEventListener("input", formatAccessKey);
 elements.previousButton.addEventListener("click", () => selectOffset(-1));
 elements.nextButton.addEventListener("click", () => selectOffset(1));
 elements.deleteButton.addEventListener("click", deleteSelectedScreenshot);
+elements.deleteAllButton.addEventListener("click", deleteAllScreenshots);
+elements.exportButton.addEventListener("click", exportScreenshots);
 
 elements.handled.addEventListener("change", async () => {
   const current = getSelected();
-  if (!state.roomJoined || !current || state.refreshing || hasPendingDelete()) {
+  if (!state.roomJoined || !current || isBusy()) {
     renderViewer();
     return;
   }
 
+  const handled = elements.handled.checked;
+  state.updatingHandled = true;
+  renderAll();
   try {
     await api(`/api/screenshots/${current.id}/handled`, {
       method: "PATCH",
-      body: JSON.stringify({ handled: elements.handled.checked }),
+      body: JSON.stringify({ handled }),
     });
-    current.handled = elements.handled.checked;
+    current.handled = handled;
     renderFilmstrip();
   } catch (error) {
     elements.handled.checked = current.handled;
     setRoomConnection(error.message, true);
+  } finally {
+    state.updatingHandled = false;
+    renderAll();
   }
 });
 
 document.addEventListener("keydown", (event) => {
   if (!state.roomJoined) return;
   const tagName = document.activeElement?.tagName;
-  if (tagName === "INPUT" || tagName === "TEXTAREA") return;
+  if (["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tagName)) return;
   if (event.key === "ArrowLeft") selectOffset(-1);
   if (event.key === "ArrowRight") selectOffset(1);
 });
@@ -165,11 +190,13 @@ function enterRoom(session) {
   elements.entryScreen.hidden = true;
   elements.roomScreen.hidden = false;
   document.body.classList.add("room-active");
+  renderAll();
   setRoomConnection(`Đã kết nối · ${state.screenshots.length} ảnh`, false);
   startAutoRefresh();
 }
 
 function leaveRoom() {
+  if (hasPendingOperation()) return;
   state.roomJoined = false;
   state.generation += 1;
   window.clearInterval(state.refreshTimer);
@@ -181,8 +208,8 @@ function leaveRoom() {
   elements.entryScreen.hidden = false;
   document.body.classList.remove("room-active");
   elements.connectionForm.reset();
-  elements.accessKey.type = "password";
-  elements.toggleKey.textContent = "Hiện";
+  setKeyVisibility(false);
+  elements.messageMode.value = "text";
   elements.message.value = "";
   updateCharacterCount();
   setEntryStatus("Key được tạo tự động khi ZenConnect chạy lần đầu.", false);
@@ -190,17 +217,21 @@ function leaveRoom() {
 }
 
 async function refreshRoom() {
-  if (!state.roomJoined || state.refreshing || hasPendingDelete()) return;
+  if (!state.roomJoined || isBusy()) return;
+  const generation = state.generation;
   state.refreshing = true;
   try {
     await fetchWorkspaceData(state.generation);
-    setRoomConnection(`Đã kết nối · ${state.screenshots.length} ảnh`, false);
+    if (generation === state.generation) setRoomConnection(`Đã kết nối · ${state.screenshots.length} ảnh`, false);
   } catch (error) {
-    setRoomConnection(error.message, true);
-    setRoomLoading(false);
+    if (generation === state.generation) {
+      setRoomConnection(error.message, true);
+      setRoomLoading(false);
+    }
   } finally {
     state.refreshing = false;
     elements.refreshButton.disabled = false;
+    renderAll();
   }
 }
 
@@ -256,7 +287,7 @@ function renderViewer() {
   const index = getSelectedIndex();
   const total = state.screenshots.length;
   const hasCurrent = Boolean(current);
-  const deleting = hasPendingDelete();
+  const deleting = isBusy();
 
   elements.reviewEmpty.hidden = hasCurrent;
   elements.selectedImage.hidden = !hasCurrent;
@@ -267,6 +298,15 @@ function renderViewer() {
   elements.deleteButton.classList.toggle("is-loading", state.deletingScreenshot);
   elements.deleteButton.setAttribute("aria-busy", String(state.deletingScreenshot));
   elements.deleteLabel.textContent = state.deletingScreenshot ? "Đang xóa" : "Xóa ảnh";
+  elements.deleteAllButton.disabled = !state.roomJoined || total === 0 || deleting;
+  elements.exportButton.disabled = !state.roomJoined || total === 0 || deleting;
+  elements.deleteAllButton.textContent = state.deletingAll ? "Đang xóa…" : "Xóa toàn bộ ảnh";
+  elements.exportButton.textContent = state.exporting ? "Đang xuất…" : "Xuất đề · ZIP";
+  elements.deleteAllButton.setAttribute("aria-busy", String(state.deletingAll));
+  elements.exportButton.setAttribute("aria-busy", String(state.exporting));
+  elements.leaveButton.disabled = hasPendingOperation();
+  elements.refreshButton.disabled = deleting;
+  renderComposer();
   elements.previousButton.disabled = deleting || index <= 0;
   elements.nextButton.disabled = deleting || index < 0 || index >= total - 1;
   elements.previousButton.hidden = !hasCurrent;
@@ -277,8 +317,6 @@ function renderViewer() {
     elements.sequence.textContent = "Chưa có ảnh";
     elements.createdAt.textContent = "";
     elements.chatContext.textContent = "Chưa chọn ảnh";
-    elements.composerTitle.textContent = "Phản hồi ảnh";
-    elements.message.placeholder = "Chưa có ảnh để phản hồi...";
     elements.selectedImage.removeAttribute("src");
     elements.handled.checked = false;
     return;
@@ -287,8 +325,6 @@ function renderViewer() {
   elements.sequence.textContent = `Ảnh ${padNumber(current.sequence)} / ${padNumber(total)}`;
   elements.createdAt.textContent = formatDateTime(current.createdAt);
   elements.chatContext.textContent = `Đang xem ảnh ${current.sequence}`;
-  elements.composerTitle.textContent = `Phản hồi ảnh ${padNumber(current.sequence)}`;
-  elements.message.placeholder = "Nhập phản hồi của bạn...";
   elements.selectedImage.src = state.objectUrls.get(current.id) ?? "";
   elements.handled.checked = current.handled;
 }
@@ -302,7 +338,7 @@ function renderFilmstrip() {
     button.className = `thumbnail-button${item.id === state.selectedId ? " active" : ""}`;
     button.title = `Mở ảnh ${item.sequence}`;
     button.setAttribute("aria-label", `Mở ảnh ${item.sequence}`);
-    button.disabled = hasPendingDelete();
+    button.disabled = hasPendingOperation();
     button.addEventListener("click", () => selectScreenshot(item.id));
 
     const image = document.createElement("img");
@@ -336,20 +372,23 @@ function renderChat() {
   elements.messageCount.textContent = String(state.messages.length);
 
   for (const item of [...state.messages].sort((left, right) => left.id - right.id)) {
+    const roomLevel = !item.screenshotId;
     const wrapper = document.createElement("article");
-    wrapper.className = `message-item${item.screenshotId === state.selectedId ? " active" : ""}`;
-    wrapper.tabIndex = 0;
-    wrapper.addEventListener("click", () => selectScreenshot(item.screenshotId));
-    wrapper.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        selectScreenshot(item.screenshotId);
-      }
-    });
+    wrapper.className = `message-item${roomLevel ? " answer-message" : item.screenshotId === state.selectedId ? " active" : ""}`;
+    if (!roomLevel) {
+      wrapper.tabIndex = 0;
+      wrapper.addEventListener("click", () => selectScreenshot(item.screenshotId));
+      wrapper.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectScreenshot(item.screenshotId);
+        }
+      });
+    }
 
     const badge = document.createElement("span");
     badge.className = "message-badge";
-    badge.textContent = padNumber(item.sequence);
+    badge.textContent = roomLevel ? "ĐA" : padNumber(item.sequence);
 
     const copy = document.createElement("div");
     copy.className = "message-copy";
@@ -357,7 +396,7 @@ function renderChat() {
     meta.className = "message-meta";
     const author = document.createElement("span");
     author.className = "message-author";
-    author.textContent = `Phản hồi · Ảnh ${item.sequence}`;
+    author.textContent = roomLevel ? "Đáp án chung" : `Phản hồi · Ảnh ${item.sequence}`;
     const time = document.createElement("time");
     time.textContent = formatTime(item.createdAt);
     const metaActions = document.createElement("div");
@@ -366,9 +405,9 @@ function renderChat() {
     deleteButton.type = "button";
     deleteButton.className = "message-delete-button";
     deleteButton.textContent = state.deletingMessageIds.has(item.id) ? "Đang xóa" : "Xóa";
-    deleteButton.title = `Xóa phản hồi ảnh ${item.sequence}`;
-    deleteButton.setAttribute("aria-label", `Xóa phản hồi ảnh ${item.sequence}`);
-    deleteButton.disabled = state.refreshing || hasPendingDelete();
+    deleteButton.title = roomLevel ? "Xóa danh sách đáp án" : `Xóa phản hồi ảnh ${item.sequence}`;
+    deleteButton.setAttribute("aria-label", deleteButton.title);
+    deleteButton.disabled = isBusy();
     deleteButton.addEventListener("click", (event) => {
       event.stopPropagation();
       deleteMessage(item);
@@ -392,19 +431,36 @@ function renderChat() {
 
 async function sendMessage() {
   const current = getSelected();
-  const text = elements.message.value.trim();
-  if (!state.roomJoined || !current || !text || state.refreshing || hasPendingDelete()) return;
+  if (!state.roomJoined || isBusy()) return;
+  const composed = composedMessage();
+  const text = composed.text;
+  if (!text) return;
+  if (elements.messageMode.value === "choice" && !composed.roomLevel) {
+    elements.messageStatus.textContent = "Nhập đáp án theo mẫu: 1 A | 2 B | 3 C";
+    return;
+  }
+  if (!composed.roomLevel && !current) {
+    elements.messageStatus.textContent = "Chưa có ảnh để gửi phản hồi.";
+    return;
+  }
+  if (text.length > 2000) {
+    elements.messageStatus.textContent = "Nội dung gồm đáp án và ghi chú không được quá 2000 ký tự.";
+    return;
+  }
 
+  state.sendingMessage = true;
   setMessageLoading(true);
+  renderAll();
   try {
-    const created = await api(`/api/screenshots/${current.id}/message`, {
+    const endpoint = composed.roomLevel ? "/api/messages" : `/api/screenshots/${current.id}/message`;
+    const created = await api(endpoint, {
       method: "POST",
       body: JSON.stringify({ text }),
     });
     state.messages.push(created);
-    current.handled = true;
+    if (!composed.roomLevel) current.handled = true;
     elements.message.value = "";
-    elements.handled.checked = true;
+    if (!composed.roomLevel) elements.handled.checked = true;
     elements.messageStatus.textContent = "Đã gửi";
     updateCharacterCount();
     renderChat();
@@ -412,13 +468,15 @@ async function sendMessage() {
   } catch (error) {
     elements.messageStatus.textContent = error.message;
   } finally {
+    state.sendingMessage = false;
     setMessageLoading(false);
+    renderAll();
   }
 }
 
 async function deleteSelectedScreenshot() {
   const current = getSelected();
-  if (!state.roomJoined || !current || state.refreshing || hasPendingDelete()) return;
+  if (!state.roomJoined || !current || isBusy()) return;
 
   const relatedMessageCount = state.messages.filter((item) => item.screenshotId === current.id).length;
   const relatedText = relatedMessageCount > 0
@@ -451,8 +509,9 @@ async function deleteSelectedScreenshot() {
 }
 
 async function deleteMessage(item) {
-  if (!state.roomJoined || state.refreshing || hasPendingDelete()) return;
-  if (!window.confirm(`Xóa phản hồi của ảnh ${item.sequence}? Hành động này không thể hoàn tác.`)) return;
+  if (!state.roomJoined || isBusy()) return;
+  const label = item.screenshotId ? `phản hồi của ảnh ${item.sequence}` : "danh sách đáp án này";
+  if (!window.confirm(`Xóa ${label}? Hành động này không thể hoàn tác.`)) return;
 
   state.deletingMessageIds.add(item.id);
   renderAll();
@@ -469,7 +528,7 @@ async function deleteMessage(item) {
 }
 
 function selectScreenshot(id) {
-  if (hasPendingDelete()) return;
+  if (hasPendingOperation()) return;
   if (!state.screenshots.some((item) => item.id === id)) return;
   state.selectedId = id;
   elements.messageStatus.textContent = "";
@@ -491,7 +550,118 @@ function getSelectedIndex() {
 }
 
 function hasPendingDelete() {
-  return state.deletingScreenshot || state.deletingMessageIds.size > 0;
+  return state.deletingScreenshot || state.deletingAll || state.deletingMessageIds.size > 0;
+}
+
+function hasPendingOperation() {
+  return hasPendingDelete() || state.sendingMessage || state.exporting || state.updatingHandled;
+}
+
+function isBusy() { return state.refreshing || hasPendingOperation(); }
+
+async function deleteAllScreenshots() {
+  if (!state.roomJoined || !state.screenshots.length || isBusy()) return;
+  if (!window.confirm(`Xóa vĩnh viễn TOÀN BỘ ảnh và phản hồi gắn với ảnh trong phòng này? Danh sách đáp án chung vẫn được giữ. Hiện có ${state.screenshots.length} ảnh. Hành động không thể hoàn tác.`)) return;
+  state.deletingAll = true;
+  renderAll();
+  try {
+    const result = await api("/api/screenshots", { method: "DELETE" });
+    for (const url of state.objectUrls.values()) URL.revokeObjectURL(url);
+    state.objectUrls.clear();
+    state.screenshots = [];
+    state.messages = state.messages.filter((item) => !item.screenshotId);
+    state.selectedId = null;
+    elements.message.value = "";
+    elements.messageStatus.textContent = "";
+    updateCharacterCount();
+    const warning = result.failedImageCount > 0
+      ? ` Có ${result.failedImageCount} file trên server chưa xóa được.` : "";
+    setRoomConnection(`Đã xóa ${result.deletedScreenshotCount} ảnh và ${result.deletedMessageCount} phản hồi.${warning}`, result.failedImageCount > 0);
+  } catch (error) {
+    setRoomConnection(error.message, true);
+  } finally {
+    state.deletingAll = false;
+    renderAll();
+  }
+}
+
+async function exportScreenshots() {
+  if (!state.roomJoined || !state.screenshots.length || isBusy()) return;
+  state.exporting = true;
+  renderAll();
+  setRoomConnection("Đang gom ảnh và chuẩn bị file ZIP…", false);
+  try {
+    const response = await fetch("/api/screenshots/export", { headers: authHeaders() });
+    if (!response.ok) throw new Error(await responseError(response));
+    const count = Number(response.headers.get("X-Screenshot-Count"));
+    const blob = await response.blob();
+    if (!Number.isInteger(count) || count < 1 || blob.size === 0 || !blob.type.includes("application/zip")) {
+      throw new Error("Không nhận được file ZIP chứa ảnh. Hãy thử lại.");
+    }
+    const fileName = response.headers.get("Content-Disposition")?.match(/filename="?(de-zenconnect-[\d-]+\.zip)"?/i)?.[1]
+      ?? "de-zenconnect.zip";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setRoomConnection(`Đã tạo ZIP gồm ${count} ảnh và bắt đầu tải về.`, false);
+  } catch (error) {
+    setRoomConnection(error.message, true);
+  } finally {
+    state.exporting = false;
+    renderAll();
+  }
+}
+
+function composedMessage() {
+  const value = elements.message.value.trim();
+  const parsed = parseAnswerSet(value);
+  const forced = elements.messageMode.value === "choice";
+  if (parsed && (forced || parsed.answers.length >= 2)) {
+    return {
+      text: `Đáp án trắc nghiệm\n${parsed.answers.map((item) => `${item.number}. ${item.answer}`).join(" | ")}`,
+      roomLevel: true,
+    };
+  }
+  return { text: value, roomLevel: false };
+}
+
+function parseAnswerSet(value) {
+  const source = value.replace(/^\s*(?:đáp\s*án(?:\s*trắc\s*nghiệm)?\s*[:\-]?\s*)/iu, "");
+  const pattern = /(\d{1,3})\s*[.):-]?\s*([A-D](?:\s*[,/+]+\s*[A-D])*)/giu;
+  const answers = [];
+  const seen = new Set();
+  let remainder = source;
+  for (const match of source.matchAll(pattern)) {
+    const number = Number(match[1]);
+    if (seen.has(number)) continue;
+    seen.add(number);
+    const choices = [...new Set(match[2].toUpperCase().match(/[A-D]/g) ?? [])];
+    answers.push({ number, answer: choices.join(", ") });
+    remainder = remainder.replace(match[0], " ");
+  }
+  remainder = remainder.replace(/[\s|;,.…\-–—]+/gu, "");
+  return answers.length && !remainder ? { answers } : null;
+}
+
+function renderComposer() {
+  const current = getSelected();
+  const choice = elements.messageMode.value === "choice";
+  const disabled = !state.roomJoined || isBusy();
+  elements.messageMode.disabled = disabled;
+  elements.message.disabled = disabled;
+  elements.message.required = false;
+  elements.sendButton.disabled = disabled;
+  elements.messageForm.setAttribute("aria-busy", String(state.sendingMessage));
+  elements.composerTitle.textContent = choice ? "Danh sách đáp án"
+    : current ? `Phản hồi ảnh ${padNumber(current.sequence)}` : "Phản hồi ảnh";
+  elements.message.placeholder = choice ? "1 A | 2 B | 3 C | 4 D"
+    : !current ? "Dán danh sách đáp án hoặc chờ ảnh để phản hồi..." : "Nhập phản hồi hoặc dán: 1 A | 2 B | 3 C";
+  updateCharacterCount();
 }
 
 async function api(path, options = {}) {
@@ -535,6 +705,8 @@ function setRoomLoading(loading) {
   elements.messageList.setAttribute("aria-busy", String(loading));
   elements.imageStage.setAttribute("aria-busy", String(loading));
   elements.refreshButton.disabled = loading;
+  elements.deleteAllButton.disabled = loading || !state.screenshots.length || isBusy();
+  elements.exportButton.disabled = loading || !state.screenshots.length || isBusy();
   elements.deleteButton.disabled = loading || !getSelected() || hasPendingDelete();
   for (const button of elements.messageList.querySelectorAll(".message-delete-button")) {
     button.disabled = loading || hasPendingDelete();
@@ -567,11 +739,11 @@ function setConnecting(connecting) {
 }
 
 function setMessageLoading(loading) {
-  elements.sendButton.disabled = loading || !getSelected();
+  elements.sendButton.disabled = loading || !state.roomJoined;
 }
 
 function updateCharacterCount() {
-  elements.characterCount.textContent = `${elements.message.value.length} / 2000`;
+  elements.characterCount.textContent = `${composedMessage().text.length} / 2000`;
 }
 
 function formatAccessKey() {

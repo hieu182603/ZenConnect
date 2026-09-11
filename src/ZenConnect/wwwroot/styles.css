@@ -172,11 +172,13 @@ button:disabled { cursor: default; opacity: .42; }
 
 .password-field {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 62px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
 }
 
 .password-field input {
-  border-radius: 4px 0 0 4px;
+  min-width: 0;
 }
 
 .password-field button {
@@ -902,25 +904,59 @@ textarea:focus-visible,
 
 .entry-form input {
   height: 54px;
-  padding: 0 92px 0 16px;
-  border: 1px solid var(--line);
-  background: var(--ink);
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
   color: var(--paper);
   font-family: Consolas, "SFMono-Regular", monospace;
-  font-size: 15px;
-  letter-spacing: .035em;
+  font-size: 14px;
+  letter-spacing: 0;
 }
 
 .entry-form input::placeholder {
-  color: #68777f;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.key-control {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.key-control > label {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.password-field {
+  padding-right: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--ink);
+  transition: border-color .15s, box-shadow .15s;
+}
+
+.password-field:focus-within {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgb(40 171 197 / 16%);
+}
+
+.password-field input:focus-visible {
+  outline: none;
+}
+
+.password-field input::-ms-reveal {
+  display: none;
 }
 
 .password-field button {
-  right: 8px;
-  min-width: 68px;
-  height: 38px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
+  min-width: 52px;
+  min-height: 42px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
   background: var(--surface-raised);
   color: var(--muted-strong);
 }
@@ -1141,6 +1177,16 @@ h2 {
   color: #081216;
 }
 
+.message-item.answer-message {
+  border-color: rgba(43, 169, 199, .28);
+  background: rgba(43, 169, 199, .08);
+}
+
+.message-item.answer-message .message-badge {
+  background: rgba(43, 169, 199, .18);
+  color: #7fd9ec;
+}
+
 .message-author {
   color: var(--muted-strong);
 }
@@ -1228,10 +1274,51 @@ h2 {
   font-weight: 800;
 }
 
+.composer-mode {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.composer-mode select {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--ink);
+  color: var(--paper);
+  font: inherit;
+  color-scheme: dark;
+}
+
+.composer-mode select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+.filmstrip-summary, .collection-actions, .selection-actions { display: flex; align-items: center; gap: 12px; }
+.filmstrip-heading { height: auto; min-height: 36px; align-items: center; flex-wrap: wrap; gap: 10px; }
+.collection-actions { gap: 8px; }
+.collection-actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.collection-actions button:hover:not(:disabled) { border-color: var(--cyan); color: var(--paper); }
+.collection-actions .danger-action:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+
 .viewer-panel {
   min-width: 0;
   display: grid;
-  grid-template-rows: 62px minmax(0, 1fr) 126px;
+  grid-template-rows: 62px minmax(0, 1fr) auto;
   background: var(--ink);
 }
 
@@ -1264,6 +1351,10 @@ h2 {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  gap: 14px;
+}
+
+.selection-actions {
   gap: 14px;
 }
 
@@ -1491,7 +1582,7 @@ h2 {
   .viewer-panel {
     min-height: 68dvh;
     grid-row: 1;
-    grid-template-rows: 58px minmax(360px, 1fr) 118px;
+    grid-template-rows: auto minmax(360px, 1fr) auto;
   }
 
   .chat-panel {
@@ -1544,7 +1635,22 @@ h2 {
   }
 
   .viewer-toolbar {
-    padding: 0 14px;
+    min-height: 104px;
+    padding: 10px 14px;
+    align-content: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .viewer-toolbar .image-meta,
+  .viewer-actions {
+    width: 100%;
+  }
+
+  .viewer-actions {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
   }
 
   .handled-control span {

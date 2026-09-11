@@ -15,7 +15,7 @@ namespace ZenConnect;
 internal static class Program
 {
     [STAThread]
-    public static async Task Main(string[] args)
+    public static void Main(string[] args)
     {
         bool serverMode = args.Any(arg =>
             string.Equals(arg, "--server", StringComparison.OrdinalIgnoreCase) ||
@@ -25,19 +25,26 @@ internal static class Program
 #if WINDOWS
         if (serverMode || !OperatingSystem.IsWindows())
         {
-            await ZenWebServer.RunAsync(args);
+            ZenWebServer.RunAsync(args).GetAwaiter().GetResult();
             return;
         }
 
         using var cts = new CancellationTokenSource();
         Microsoft.AspNetCore.Builder.WebApplication? serverApp = null;
-        try
+        if (ShouldStartLocalServer())
         {
-            serverApp = await ZenWebServer.StartBackgroundAsync("http://localhost:5080", cts.Token);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[ZenConnect] Background server note: {ex.Message}");
+            try
+            {
+                // Do not await before Application.Run. A console-style async Main has no
+                // synchronization context and can resume on an MTA worker, which breaks
+                // WinForms clipboard/OLE operations despite the STAThread attribute.
+                serverApp = ZenWebServer.StartBackgroundAsync("http://localhost:5080", cts.Token)
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ZenConnect] Background server note: {ex.Message}");
+            }
         }
 
         try
@@ -52,8 +59,8 @@ internal static class Program
                 cts.Cancel();
                 try
                 {
-                    await serverApp.StopAsync();
-                    await serverApp.DisposeAsync();
+                    serverApp.StopAsync().GetAwaiter().GetResult();
+                    serverApp.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 }
                 catch
                 {
@@ -61,7 +68,15 @@ internal static class Program
             }
         }
 #else
-        await ZenWebServer.RunAsync(args);
+        ZenWebServer.RunAsync(args).GetAwaiter().GetResult();
 #endif
     }
+
+#if WINDOWS
+    private static bool ShouldStartLocalServer()
+    {
+        string? configured = Environment.GetEnvironmentVariable("ZENCONNECT_SERVER_URL");
+        return Uri.TryCreate(configured, UriKind.Absolute, out Uri? uri) && uri.IsLoopback;
+    }
+#endif
 }

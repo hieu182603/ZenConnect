@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -104,7 +105,7 @@ public sealed class ReviewStore
             if (overflow.Count > 0)
             {
                 HashSet<Guid> expiredIds = overflow.Select(item => item.Id).ToHashSet();
-                state.Messages.RemoveAll(item => expiredIds.Contains(item.ScreenshotId));
+                state.Messages.RemoveAll(item => item.ScreenshotId.HasValue && expiredIds.Contains(item.ScreenshotId.Value));
                 state.Screenshots.RemoveAll(item => expiredIds.Contains(item.Id));
             }
 
@@ -179,6 +180,7 @@ public sealed class ReviewStore
             {
                 Id = nextId,
                 ScreenshotId = screenshot.Id,
+                Session = screenshot.Session,
                 Text = text,
                 CreatedAt = DateTimeOffset.UtcNow
             };
@@ -187,6 +189,37 @@ public sealed class ReviewStore
             screenshot.Handled = true;
             await SaveAsync(state);
             return ToMessageView(message, screenshot);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<MessageView?> AddRoomMessageAsync(string session, string text)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            StorageState state = await LoadAsync();
+            if (!state.Rooms.Any(item => string.Equals(item.Key, session, StringComparison.OrdinalIgnoreCase)))
+                return null;
+
+            long nextId = Math.Max(
+                state.NextMessageId,
+                state.Messages.Select(item => item.Id).DefaultIfEmpty(0).Max() + 1);
+            var message = new MessageRecord
+            {
+                Id = nextId,
+                Session = session,
+                ScreenshotId = null,
+                Text = text,
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            state.NextMessageId = nextId + 1;
+            state.Messages.Add(message);
+            await SaveAsync(state);
+            return ToMessageView(message, null);
         }
         finally
         {
@@ -254,7 +287,9 @@ public sealed class ReviewStore
                 .Select(item => item.Id)
                 .ToHashSet();
             MessageRecord? message = state.Messages.FirstOrDefault(item =>
-                item.Id == messageId && roomScreenshotIds.Contains(item.ScreenshotId));
+                item.Id == messageId
+                && (string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase)
+                    || (item.ScreenshotId.HasValue && roomScreenshotIds.Contains(item.ScreenshotId.Value))));
             if (message == null)
                 return null;
 
@@ -265,6 +300,75 @@ public sealed class ReviewStore
                 Id = message.Id,
                 ScreenshotId = message.ScreenshotId
             };
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<RoomDeleteResult> DeleteRoomScreenshotsAsync(string session)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            StorageState state = await LoadAsync();
+            var screenshots = state.Screenshots
+                .Where(item => string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var ids = screenshots.Select(item => item.Id).ToHashSet();
+            int messages = state.Messages.RemoveAll(item => item.ScreenshotId.HasValue && ids.Contains(item.ScreenshotId.Value));
+            state.Screenshots.RemoveAll(item => ids.Contains(item.Id));
+            // Keep the room registration so clients can continue uploading.
+            await SaveAsync(state);
+            int failedFiles = screenshots.Count(item => !DeleteImageFile(item.FileName));
+            return new RoomDeleteResult(screenshots.Count, messages, failedFiles);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<RoomArchive?> CreateRoomArchiveAsync(string session, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        FileStream? output = null;
+        try
+        {
+            StorageState state = await LoadAsync();
+            var screenshots = state.Screenshots
+                .Where(item => string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.Sequence).ThenBy(item => item.CreatedAt).ToList();
+            if (screenshots.Count == 0) return null;
+
+            string folder = "de-zenconnect-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss");
+            // Build on disk, not in RAM. DeleteOnClose also cleans up aborted downloads.
+            output = new FileStream(Path.Combine(Path.GetTempPath(), Path.GetRandomFileName()),
+                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 65536,
+                FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+            using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                for (int index = 0; index < screenshots.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var screenshot = screenshots[index];
+                    await using var source = File.OpenRead(GetImagePath(screenshot.FileName));
+                    if (source.Length == 0) throw new IOException("An image is empty.");
+                    var entry = archive.CreateEntry(
+                        $"{folder}/{index + 1:D4}-anh-{screenshot.Sequence:D4}.png", CompressionLevel.NoCompression);
+                    await using var destination = entry.Open();
+                    await source.CopyToAsync(destination, cancellationToken);
+                }
+            }
+            // The gate holds a consistent snapshot until every image has been copied.
+            output.Position = 0;
+            return new RoomArchive(output, folder + ".zip", screenshots.Count);
+        }
+        catch
+        {
+            if (output != null) await output.DisposeAsync();
+            throw;
         }
         finally
         {
@@ -283,9 +387,15 @@ public sealed class ReviewStore
                 .ToDictionary(item => item.Id);
 
             return state.Messages
-                .Where(item => item.Id > after && screenshots.ContainsKey(item.ScreenshotId))
+                .Where(item => item.Id > after
+                    && (string.Equals(item.Session, session, StringComparison.OrdinalIgnoreCase)
+                        || (item.ScreenshotId.HasValue && screenshots.ContainsKey(item.ScreenshotId.Value))))
                 .OrderBy(item => item.Id)
-                .Select(item => ToMessageView(item, screenshots[item.ScreenshotId]))
+                .Select(item => ToMessageView(
+                    item,
+                    item.ScreenshotId.HasValue && screenshots.TryGetValue(item.ScreenshotId.Value, out ScreenshotRecord? screenshot)
+                        ? screenshot
+                        : null))
                 .ToList();
         }
         finally
@@ -349,13 +459,13 @@ public sealed class ReviewStore
         }
     }
 
-    private static MessageView ToMessageView(MessageRecord message, ScreenshotRecord screenshot)
+    private static MessageView ToMessageView(MessageRecord message, ScreenshotRecord? screenshot)
     {
         return new MessageView
         {
             Id = message.Id,
-            ScreenshotId = screenshot.Id,
-            Sequence = screenshot.Sequence,
+            ScreenshotId = screenshot?.Id,
+            Sequence = screenshot?.Sequence,
             Text = message.Text,
             CreatedAt = message.CreatedAt
         };
@@ -389,7 +499,8 @@ public sealed class ScreenshotRecord
 public sealed class MessageRecord
 {
     public long Id { get; set; }
-    public Guid ScreenshotId { get; set; }
+    public Guid? ScreenshotId { get; set; }
+    public string? Session { get; set; }
     public string Text { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
 }
@@ -414,14 +525,17 @@ public sealed class ScreenshotDeleteResult
 public sealed class MessageDeleteResult
 {
     public long Id { get; set; }
-    public Guid ScreenshotId { get; set; }
+    public Guid? ScreenshotId { get; set; }
 }
+
+public sealed record RoomDeleteResult(int DeletedScreenshotCount, int DeletedMessageCount, int FailedImageCount);
+public sealed record RoomArchive(FileStream Stream, string FileName, int ImageCount);
 
 public sealed class MessageView
 {
     public long Id { get; set; }
-    public Guid ScreenshotId { get; set; }
-    public int Sequence { get; set; }
+    public Guid? ScreenshotId { get; set; }
+    public int? Sequence { get; set; }
     public string Text { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
 }

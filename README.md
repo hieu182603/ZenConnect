@@ -35,7 +35,7 @@ Yêu cầu .NET 8 SDK.
 ### 1. Khởi chạy nhanh (1-Click)
 Nhấp đúp file **`run.bat`** ở thư mục gốc. Ứng dụng sẽ:
 - Tự động publish ra file chạy duy nhất `ZenConnect.exe` (Single-file).
-- Khởi động Kestrel web server ngầm tại `http://localhost:5080`.
+- Kết nối server production. Nếu `ZENCONNECT_SERVER_URL` trỏ đến địa chỉ loopback, tool khởi động Kestrel local tại `http://localhost:5080`.
 - Mở giao diện WinForms client.
 - Tự động dừng server ngầm khi người dùng đóng cửa sổ tool.
 
@@ -50,19 +50,24 @@ dotnet run --project .\src\ZenConnect\ZenConnect.csproj -- --server
 
 Dữ liệu local được lưu trữ ổn định tại `%LocalAppData%\ZenConnect\server-data`. Log khởi động nằm tại `%LocalAppData%\ZenConnect\logs\launcher.log`.
 
-Server production mặc định là `https://zenconnect-noli.onrender.com`. Có thể chỉnh URL trực tiếp trong client hoặc đặt biến `ZENCONNECT_SERVER_URL`.
+Client mặc định kết nối server production `https://zenconnect-noli.onrender.com`. Có thể ghi đè bằng biến `ZENCONNECT_SERVER_URL`; dùng `http://localhost:5080` để kiểm thử local.
 
 ## Sử dụng
 
-1. Mở tool. Tool sẽ tự kết nối và đăng ký phòng của máy; nếu kết nối tự động không thành công, kiểm tra Server URL rồi nhấn `KẾT NỐI` để thử lại.
+1. Mở tool. Tool sẽ tự kết nối `https://zenconnect-noli.onrender.com` và đăng ký phòng của máy. Giao diện không hiển thị phần cấu hình server; có thể đặt URL khác bằng biến môi trường `ZENCONNECT_SERVER_URL` khi cần.
 2. Key được tạo trong lần chạy đầu và lưu tại `%LocalAppData%\ZenConnect\device-key.txt`.
-3. Nhấn `MỞ PHÒNG WEB` hoặc mở URL server trên trình duyệt (`http://localhost:5080`) và nhập key đó.
-4. Sau khi kết nối, nhấn `X` ở bất kỳ đâu để chụp nhanh; cũng có thể dùng `CHỤP TOÀN MÀN HÌNH` hoặc `CHỤP VÙNG` trên tool.
+3. Mở `https://zenconnect-noli.onrender.com` trên trình duyệt và nhập key đó. Khi kiểm thử local, đặt `ZENCONNECT_SERVER_URL=http://localhost:5080` rồi mở `http://localhost:5080`.
+4. Sau khi kết nối, nhấn `X` để chụp nhanh hoặc dùng `CHỤP TOÀN MÀN HÌNH` trên tool. Khi con trỏ đang ở ô nhập văn bản, tool tự nhả hotkey để ký tự `X` được nhập bình thường.
 5. Nhấn chuột phải để bật hoặc tắt thanh phản hồi một dòng cạnh con trỏ. Thao tác chuột phải thông thường của Windows vẫn hoạt động.
 6. Khi thanh phản hồi đang hiện, lăn chuột lên/xuống để xem lần lượt các tin nhắn; thao tác cuộn vẫn được chuyển tiếp đến ứng dụng đang dùng. Có thể dùng `Ctrl + Shift + Up/Down` thay thế.
 7. Trong phòng web, dùng `Xóa` trên từng phản hồi để xóa riêng tin nhắn; dùng `Xóa ảnh` trên thanh công cụ để xóa ảnh đang xem cùng toàn bộ phản hồi liên quan. Cả hai thao tác đều yêu cầu xác nhận và không thể hoàn tác.
+8. Chọn `Đáp án nhiều câu`, rồi nhập hoặc dán theo mẫu `1 A | 2 B | 3 C`. Danh sách này được gửi ở cấp phòng, không gắn với từng ảnh. Nếu dán cùng định dạng vào chế độ `Phản hồi`, web cũng tự nhận dạng và gửi dưới dạng đáp án trắc nghiệm.
+9. Dùng `Xuất đề · ZIP` để gom toàn bộ ảnh của phòng theo đúng thứ tự vào một thư mục trong file ZIP. Hệ thống không tạo file tải về nếu có ảnh bị thiếu hoặc không đọc được.
+10. Dùng `Xóa toàn bộ ảnh` để xóa tất cả ảnh và phản hồi của phòng hiện tại. Room key vẫn được giữ để client có thể tiếp tục gửi ảnh mới.
 
-URL server gần nhất được lưu tại `%LocalAppData%\ZenConnect\server-url.txt`.
+File `server-url.txt` của các bản cũ không còn được đọc, tránh trường hợp client bị kẹt ở một server hoặc cổng tạm đã ngừng hoạt động.
+
+Đóng cửa sổ chỉ ẩn tool xuống khay hệ thống; thao tác chụp và nhận phản hồi vẫn chạy. Nhấp đúp biểu tượng ZenConnect để mở lại, hoặc nhấn `Shift + Tab` để thoát hẳn. Windows vẫn có thể dừng ứng dụng khi tắt máy.
 
 > [!NOTE]
 > Room key là thông tin xác thực. Không commit `App_Data`, `store.json`, ảnh chụp hoặc các file trong `%LocalAppData%\ZenConnect` lên repository.
@@ -74,7 +79,7 @@ URL server gần nhất được lưu tại `%LocalAppData%\ZenConnect\server-ur
 1. Push repository lên GitHub hoặc GitLab.
 2. Trong Render, chọn `New` → `Blueprint` và kết nối repository.
 3. Render đọc `render.yaml`, build `src/ZenConnect/Dockerfile` và gắn persistent disk tại `/var/data`.
-4. Sau khi deploy, nhập URL HTTPS của Render vào client và nhấn `KẾT NỐI`.
+4. Sau khi deploy, đặt biến môi trường `ZENCONNECT_SERVER_URL` thành URL HTTPS của Render rồi mở lại client; tool sẽ tự kết nối.
 
 ### Sửa dịch vụ đang dùng đường dẫn cũ `ScreenReviewServer`
 
@@ -121,3 +126,9 @@ Chạy script kiểm tra toàn diện:
 ```
 
 Script sẽ tự động nhận diện .NET SDK, build toàn bộ solution, restore/publish riêng server `net8.0` theo Dockerfile vào `artifacts/render-publish`, kiểm tra cú pháp JavaScript và xác thực cú pháp các script khởi chạy. Kiểm tra này không thay thế việc build container Linux hoặc deploy thực tế trên Render.
+
+Kiểm tra API xóa/xuất ảnh và toàn bộ tương tác web bằng server cùng dữ liệu thử biệt lập:
+
+```powershell
+python .\scripts\test-room-actions.py --browser
+```

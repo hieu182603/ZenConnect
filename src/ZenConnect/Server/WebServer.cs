@@ -35,6 +35,11 @@ public static class ZenWebServer
         };
 
         WebApplicationBuilder builder = WebApplication.CreateBuilder(options);
+        // The desktop app runs without administrator rights. The Windows Event Log
+        // provider can throw AccessDenied while writing a warning and abort the
+        // active HTTP request, so keep local/server logging on stdout only.
+        builder.Logging.ClearProviders();
+        builder.Logging.AddConsole();
 
         // URL binding resolution
         string? renderPort = Environment.GetEnvironmentVariable("PORT");
@@ -158,6 +163,39 @@ public static class ZenWebServer
         app.MapGet("/api/screenshots", async (HttpRequest request, ReviewStore store) =>
             await ListScreenshotsAsync(GetRoomKey(request), store));
 
+        app.MapDelete("/api/screenshots", async (HttpRequest request, ReviewStore store) =>
+        {
+            string roomKey = GetRoomKey(request);
+            if (!RoomKey.IsValid(roomKey) || !await store.RoomExistsAsync(roomKey))
+                return InvalidRoomKey();
+
+            RoomDeleteResult deleted = await store.DeleteRoomScreenshotsAsync(roomKey);
+            if (deleted.FailedImageCount > 0)
+                app.Logger.LogWarning("Bulk delete left {Count} image files on disk.", deleted.FailedImageCount);
+            return Results.Ok(deleted);
+        });
+
+        app.MapGet("/api/screenshots/export", async (HttpContext context, ReviewStore store) =>
+        {
+            string roomKey = GetRoomKey(context.Request);
+            if (!RoomKey.IsValid(roomKey) || !await store.RoomExistsAsync(roomKey))
+                return InvalidRoomKey();
+
+            try
+            {
+                RoomArchive? archive = await store.CreateRoomArchiveAsync(roomKey, context.RequestAborted);
+                if (archive == null)
+                    return Results.BadRequest(new { error = "Phòng chưa có ảnh để xuất." });
+                context.Response.Headers["X-Screenshot-Count"] = archive.ImageCount.ToString();
+                return Results.File(archive.Stream, "application/zip", archive.FileName);
+            }
+            catch (Exception exception) when (exception is IOException || exception is UnauthorizedAccessException)
+            {
+                app.Logger.LogWarning("Room export failed: {ErrorType}.", exception.GetType().Name);
+                return Results.Conflict(new { error = "Không thể xuất đầy đủ ảnh. Có ảnh bị thiếu hoặc không đọc được, hoặc server không đủ dung lượng. Hãy kiểm tra và thử lại." });
+            }
+        });
+
         app.MapGet("/api/sessions/{session}/screenshots", async (string session, HttpRequest request, ReviewStore store) =>
         {
             if (!await CanAccessRoomAsync(request, session, store))
@@ -242,6 +280,22 @@ public static class ZenWebServer
         app.MapGet("/api/messages", async (long? after, HttpRequest request, ReviewStore store) =>
             await ListMessagesAsync(GetRoomKey(request), Math.Max(0, after ?? 0), store));
 
+        app.MapPost("/api/messages", async (MessageRequest message, HttpRequest request, ReviewStore store) =>
+        {
+            string roomKey = GetRoomKey(request);
+            if (!RoomKey.IsValid(roomKey) || !await store.RoomExistsAsync(roomKey))
+                return InvalidRoomKey();
+
+            string text = (message.Text ?? string.Empty).Trim();
+            if (text.Length == 0)
+                return Results.BadRequest(new { error = "Message cannot be empty." });
+            if (text.Length > 2000)
+                return Results.BadRequest(new { error = "Message exceeds 2000 characters." });
+
+            MessageView? created = await store.AddRoomMessageAsync(roomKey, text);
+            return created == null ? Results.NotFound() : Results.Ok(created);
+        });
+
         app.MapGet("/api/sessions/{session}/messages", async (string session, long? after, HttpRequest request, ReviewStore store) =>
         {
             if (!await CanAccessRoomAsync(request, session, store))
@@ -259,7 +313,7 @@ public static class ZenWebServer
             if (deleted == null)
                 return Results.NotFound();
 
-            app.Logger.LogInformation("Deleted message {MessageId} for screenshot {ScreenshotId}.", deleted.Id, deleted.ScreenshotId);
+            app.Logger.LogInformation("Deleted message {MessageId}; screenshot {ScreenshotId}.", deleted.Id, deleted.ScreenshotId);
             return Results.NoContent();
         });
 
